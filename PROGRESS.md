@@ -1,7 +1,6 @@
-
 # IPTV 自动订阅系统开发进度
 
-文档版本：1.4
+文档版本：1.5
 配套规范：MASTER_PLAN 3.52
 最后更新：2026-11-10
 
@@ -17,7 +16,7 @@
 |---|---|
 | 规范状态 | MASTER_PLAN 3.52 已冻结 |
 | 流程文档 | CORE_FLOW 1.0，已完成规则冲突修正 |
-| 代码实施 | models.py 已上传，静态接口核对完成 |
+| 代码实施 | models.py 已更新，静态语义审查完成 |
 | Python 实际测试 | 尚未执行 |
 | 接口冻结 | 尚未完成 |
 | GitHub Actions 工作流 | 尚未开始 |
@@ -25,13 +24,19 @@
 
 当前阶段：models.py 实际测试与接口冻结准备。
 
+说明：
+- 本次完善了 DownloadResult 的下载状态说明。
+- 本次为 PublishResult 增加了状态一致性约束。
+- 本次扩展了 models.py 对应的测试代码。
+- 上述测试代码尚未实际执行，不能据此认定模型测试通过。
+
 ---
 
 ## 二、代码进度
 
 | 顺序 | 文件 | 状态 | 接口检查 | 功能测试 | 备注 |
 |---|---|---|---|---|---|
-| 1 | models.py | 待测试 | 静态核对完成 | 未执行 | 已上传；ValidationResult 已增加未完成结果不得通过的约束 |
+| 1 | models.py | 待测试 | 静态核对完成 | 未执行 | 已补充下载结果语义和发布结果状态约束 |
 | 2 | config.py | 未开始 | 未执行 | 未执行 | 参数、预算、人工来源配置 |
 | 3 | network.py | 未开始 | 未执行 | 未执行 | 统一 IPv4 网络请求 |
 | 4 | sources.py | 未开始 | 未执行 | 未执行 | 来源管理和索引解析 |
@@ -76,14 +81,17 @@
 1. 对 models.py 执行 Python 语法检查。
 2. 执行 models.py 导入检查。
 3. 检查所有枚举、数据类、字段类型、默认值及不可变约束。
-4. 检查 ValidationResult 的完成状态与通过状态约束。
-5. 检查 candidates_incomplete 等统计字段的使用语义。
-6. 完成 CORE_FLOW.md 第八节九类接口交接核对。
-7. 完成 MASTER_PLAN 3.52 字段语义核对。
-8. 上述检查全部通过后，冻结 models.py 接口字段。
-9. 后续程序只能导入和使用 models.py 中的类型，不得自行定义重复接口结构。
-10. 后续确实需要修改接口时，必须记录变更原因、影响范围以及需要同步调整的程序。
-11. models.py 完成后，按开发顺序进入 config.py。
+4. 检查 DownloadResult 四种 success/truncated 状态组合。
+5. 检查 NetworkResult 的网络请求成功语义与 HTTP 状态码独立性。
+6. 检查 ValidationResult 的完成状态与通过状态约束。
+7. 检查 PublishResult 的 success、exit_code、git_pushed 和 remote_verified 状态约束。
+8. 检查 candidates_incomplete 等统计字段的使用语义。
+9. 完成 CORE_FLOW.md 第八节九类接口交接核对。
+10. 完成 MASTER_PLAN 3.52 字段语义核对。
+11. 上述检查全部通过后，冻结 models.py 接口字段。
+12. 后续程序只能导入和使用 models.py 中的类型，不得自行定义重复接口结构。
+13. 后续确实需要修改接口时，必须记录变更原因、影响范围以及需要同步调整的程序。
+14. models.py 完成后，按开发顺序进入 config.py。
 
 接口结构性契约以 CORE_FLOW.md 第八节为依据；
 字段语义以 MASTER_PLAN 3.52 为依据；
@@ -111,6 +119,7 @@
 | 2026-11-10 | 修正 CORE_FLOW 中与 MASTER_PLAN 第十三节冲突的预算截断表述 | CORE_FLOW.md | 已核对 GitHub 文件；未涉及代码测试 |
 | 2026-11-10 | 为 ValidationResult 增加未完成结果不得通过的约束 | models.py | 已核对 GitHub 文件；尚未执行代码测试 |
 | 2026-11-10 | 更新 models.py 当前接口审查进度和待办 | PROGRESS.md | 文档更新；未涉及代码测试 |
+| 2026-11-10 | 完善 DownloadResult 状态语义，为 PublishResult 增加状态一致性约束，并扩展对应测试代码 | models.py、tests/test_models.py、PROGRESS.md | 测试代码已编写；Python 实际测试尚未执行 |
 
 ---
 
