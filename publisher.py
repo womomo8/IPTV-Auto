@@ -1,5 +1,5 @@
 
-"""Safe IPTV M3U publisher."""
+"""Safe IPTV M3U publisher with one shared publication deadline."""
 
 from __future__ import annotations
 
@@ -26,8 +26,22 @@ class GitPublishUnconfirmed(Exception):
     """The remote Git state could not be confirmed."""
 
 
-def _validate_m3u(content: str) -> int:
-    """Validate UTF-8 M3U text and return its channel count."""
+def _remaining(deadline: float) -> float:
+    return deadline - time.monotonic()
+
+
+def _check_deadline(deadline: float | None) -> None:
+    if deadline is not None and _remaining(deadline) <= 0:
+        raise PublishError("Publication stage budget exhausted.")
+
+
+def _validate_m3u(
+    content: str,
+    deadline: float | None = None,
+) -> int:
+    """Validate M3U text and return its channel count."""
+    _check_deadline(deadline)
+
     if not isinstance(content, str) or not content:
         raise PublishError("M3U content is empty or invalid.")
 
@@ -45,8 +59,9 @@ def _validate_m3u(content: str) -> int:
     index = 1
 
     while index < len(lines):
-        extinf = lines[index]
+        _check_deadline(deadline)
 
+        extinf = lines[index]
         if not extinf.startswith("#EXTINF:") or "," not in extinf:
             raise PublishError(f"Invalid EXTINF at line {index + 1}.")
 
@@ -72,23 +87,40 @@ def _validate_m3u(content: str) -> int:
         count += 1
         index += 2
 
+    _check_deadline(deadline)
+
     if count == 0:
         raise PublishError("M3U contains no valid channels.")
 
     return count
 
 
-def _validate_bytes(data: bytes) -> int:
+def _validate_bytes(
+    data: bytes,
+    deadline: float | None = None,
+) -> int:
     """Decode strict UTF-8 and validate M3U structure."""
+    _check_deadline(deadline)
+
     try:
-        return _validate_m3u(data.decode("utf-8", errors="strict"))
+        return _validate_m3u(
+            data.decode("utf-8", errors="strict"),
+            deadline,
+        )
     except UnicodeDecodeError as exc:
         raise PublishError("M3U file is not valid UTF-8.") from exc
 
 
-def _atomic_write(target: Path, content: str) -> None:
+def _atomic_write(
+    target: Path,
+    content: str,
+    deadline: float | None = None,
+) -> None:
     """Validate a same-directory temporary file before atomic replacement."""
+    _check_deadline(deadline)
     target.parent.mkdir(parents=True, exist_ok=True)
+    _check_deadline(deadline)
+
     temporary = None
 
     try:
@@ -98,19 +130,26 @@ def _atomic_write(target: Path, content: str) -> None:
             dir=str(target.parent),
         )
         temporary = Path(name)
+        _check_deadline(deadline)
 
         with os.fdopen(fd, "wb") as stream:
             stream.write(content.encode("utf-8"))
             stream.flush()
             os.fsync(stream.fileno())
 
-        _validate_bytes(temporary.read_bytes())
+        _check_deadline(deadline)
+        _validate_bytes(temporary.read_bytes(), deadline)
+        _check_deadline(deadline)
+
         os.replace(temporary, target)
         temporary = None
 
+    except PublishError:
+        raise
     except (OSError, UnicodeError) as exc:
-        raise PublishError(f"Safe file replacement failed: {exc}") from exc
-
+        raise PublishError(
+            f"Safe file replacement failed: {exc}"
+        ) from exc
     finally:
         if temporary is not None:
             try:
@@ -150,18 +189,31 @@ def _git_text(root: Path, args: list[str], timeout: float) -> str:
     return result.stdout.strip()
 
 
-def _publish_git(root: Path, relative_path: str) -> tuple[bool, bool]:
-    """Commit only the output file, push, and verify the remote SHA."""
-    deadline = time.monotonic() + config.PUBLISH_BUDGET_SECONDS
+def _publish_git(
+    root: Path,
+    relative_path: str,
+    deadline: float | None = None,
+) -> tuple[bool, bool]:
+    """Commit only the output file and verify the remote SHA.
+
+    When called by publish(), this uses the same deadline as local
+    validation and file replacement.
+    """
+    if deadline is None:
+        deadline = time.monotonic() + config.PUBLISH_BUDGET_SECONDS
 
     def remaining() -> float:
-        return deadline - time.monotonic()
+        return _remaining(deadline)
 
     try:
+        _check_deadline(deadline)
+
         branch = os.environ.get("GITHUB_REF_NAME", "").strip()
         if not branch:
             branch = _git_text(
-                root, ["branch", "--show-current"], remaining()
+                root,
+                ["branch", "--show-current"],
+                remaining(),
             )
 
         if not branch:
@@ -208,10 +260,21 @@ def _publish_git(root: Path, relative_path: str) -> tuple[bool, bool]:
 
     except subprocess.TimeoutExpired as exc:
         raise GitPublishError(
-            "Git preparation exceeded its time budget."
+            "Git preparation exceeded the publication budget."
         ) from exc
 
+    except PublishError as exc:
+        raise GitPublishError(str(exc)) from exc
+
+    # No push has started yet. Expiration here is a known failure,
+    # not an uncertain remote result.
+    if remaining() <= 0:
+        raise GitPublishError(
+            "Publication budget expired before Git push."
+        )
+
     push_error = None
+
     try:
         pushed = _git(
             root,
@@ -223,6 +286,7 @@ def _publish_git(root: Path, relative_path: str) -> tuple[bool, bool]:
     except (subprocess.TimeoutExpired, OSError) as exc:
         push_error = str(exc)
 
+    # Once push has been attempted, failure to verify is unconfirmed.
     if remaining() <= 0:
         raise GitPublishUnconfirmed(
             "Push was attempted, but no time remains to verify remote SHA."
@@ -259,7 +323,7 @@ def publish(
     mode: RunMode,
     repository_root: Path | None = None,
 ) -> PublishResult:
-    """Publish a FilterResult in formal or isolated test mode."""
+    """Publish a FilterResult under one shared stage deadline."""
     if not isinstance(filter_result, FilterResult):
         return PublishResult(
             False,
@@ -288,6 +352,10 @@ def publish(
             error="channel_count must be a non-negative integer.",
         )
 
+    # The complete publication stage starts here. Every subsequent
+    # local and Git operation shares this one deadline.
+    deadline = time.monotonic() + config.PUBLISH_BUDGET_SECONDS
+
     configured = (
         config.FORMAL_OUTPUT_PATH
         if mode == RunMode.FORMAL
@@ -296,6 +364,8 @@ def publish(
     target = Path(configured)
 
     try:
+        _check_deadline(deadline)
+
         if target.is_absolute() or ".." in target.parts:
             raise PublishError(
                 "Output path must stay inside the repository."
@@ -307,23 +377,38 @@ def publish(
             root_text = _git_text(
                 root,
                 ["rev-parse", "--show-toplevel"],
-                10,
+                min(10.0, _remaining(deadline)),
             )
             root = Path(root_text).resolve()
+
+        _check_deadline(deadline)
 
         absolute_target = (root / target).resolve()
         relative_target = absolute_target.relative_to(root)
 
-        actual_count = _validate_m3u(filter_result.m3u_content)
+        actual_count = _validate_m3u(
+            filter_result.m3u_content,
+            deadline,
+        )
         if actual_count != filter_result.channel_count:
             raise PublishError(
                 "Declared channel_count does not match parsed M3U."
             )
 
-        if mode == RunMode.FORMAL and absolute_target.exists():
-            _validate_bytes(absolute_target.read_bytes())
+        _check_deadline(deadline)
 
-        _atomic_write(absolute_target, filter_result.m3u_content)
+        if mode == RunMode.FORMAL and absolute_target.exists():
+            _validate_bytes(absolute_target.read_bytes(), deadline)
+
+        _check_deadline(deadline)
+
+        _atomic_write(
+            absolute_target,
+            filter_result.m3u_content,
+            deadline,
+        )
+
+        _check_deadline(deadline)
 
     except PublishError as exc:
         return PublishResult(
@@ -331,6 +416,13 @@ def publish(
             ExitCode.PUBLISH_ERROR,
             configured,
             error=str(exc),
+        )
+    except subprocess.TimeoutExpired as exc:
+        return PublishResult(
+            False,
+            ExitCode.PUBLISH_ERROR,
+            configured,
+            error=f"Publication stage budget exhausted: {exc}",
         )
     except (OSError, ValueError, GitPublishError) as exc:
         code = (
@@ -358,6 +450,7 @@ def publish(
         pushed, verified = _publish_git(
             root,
             relative_target.as_posix(),
+            deadline=deadline,
         )
         return PublishResult(
             True,
