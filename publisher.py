@@ -14,9 +14,6 @@ import sources
 from models import ExitCode, FilterResult, PublishResult, RunMode
 
 
-GIT_BUDGET = 120
-
-
 class PublishError(Exception):
     """Local publication failed."""
 
@@ -155,7 +152,9 @@ def _git_text(root: Path, args: list[str], timeout: float) -> str:
 
 def _publish_git(root: Path, relative_path: str) -> tuple[bool, bool]:
     """Commit only the output file, push, and verify the remote SHA."""
-    deadline = time.monotonic() + GIT_BUDGET
+    deadline = (
+        time.monotonic() + config.PUBLISH_BUDGET_SECONDS
+    )
 
     def remaining() -> float:
         return deadline - time.monotonic()
@@ -170,29 +169,49 @@ def _publish_git(root: Path, relative_path: str) -> tuple[bool, bool]:
         if not branch:
             raise GitPublishError("Cannot determine the Git branch.")
 
-        check = _git(root, ["check-ref-format", "--branch", branch], remaining())
+        check = _git(
+            root,
+            ["check-ref-format", "--branch", branch],
+            remaining(),
+        )
         if check.returncode != 0:
             raise GitPublishError("Invalid Git branch name.")
 
         status = _git_text(
-            root, ["status", "--porcelain", "--", relative_path], remaining()
+            root,
+            ["status", "--porcelain", "--", relative_path],
+            remaining(),
         )
 
         if status:
-            _git_text(root, ["add", "--", relative_path], remaining())
+            _git_text(
+                root,
+                ["add", "--", relative_path],
+                remaining(),
+            )
             _git_text(
                 root,
                 [
-                    "commit", "--only", "-m",
-                    "Update IPTV subscription", "--", relative_path,
+                    "commit",
+                    "--only",
+                    "-m",
+                    "Update IPTV subscription",
+                    "--",
+                    relative_path,
                 ],
                 remaining(),
             )
 
-        expected_sha = _git_text(root, ["rev-parse", "HEAD"], remaining())
+        expected_sha = _git_text(
+            root,
+            ["rev-parse", "HEAD"],
+            remaining(),
+        )
 
     except subprocess.TimeoutExpired as exc:
-        raise GitPublishError("Git preparation exceeded its time budget.") from exc
+        raise GitPublishError(
+            "Git preparation exceeded its time budget."
+        ) from exc
 
     push_error = None
     try:
@@ -245,13 +264,17 @@ def publish(
     """Publish a FilterResult in formal or isolated test mode."""
     if not isinstance(filter_result, FilterResult):
         return PublishResult(
-            False, ExitCode.INPUT_ERROR, "",
+            False,
+            ExitCode.INPUT_ERROR,
+            "",
             error="filter_result must be a FilterResult.",
         )
 
     if not isinstance(mode, RunMode):
         return PublishResult(
-            False, ExitCode.INPUT_ERROR, "",
+            False,
+            ExitCode.INPUT_ERROR,
+            "",
             error="mode must be RunMode.FORMAL or RunMode.TEST.",
         )
 
@@ -261,7 +284,9 @@ def publish(
         or filter_result.channel_count < 0
     ):
         return PublishResult(
-            False, ExitCode.INPUT_ERROR, "",
+            False,
+            ExitCode.INPUT_ERROR,
+            "",
             error="channel_count must be a non-negative integer.",
         )
 
@@ -274,13 +299,17 @@ def publish(
 
     try:
         if target.is_absolute() or ".." in target.parts:
-            raise PublishError("Output path must stay inside the repository.")
+            raise PublishError(
+                "Output path must stay inside the repository."
+            )
 
         root = Path(repository_root or Path.cwd()).resolve()
 
         if mode == RunMode.FORMAL:
             root_text = _git_text(
-                root, ["rev-parse", "--show-toplevel"], 10
+                root,
+                ["rev-parse", "--show-toplevel"],
+                10,
             )
             root = Path(root_text).resolve()
 
@@ -300,7 +329,10 @@ def publish(
 
     except PublishError as exc:
         return PublishResult(
-            False, ExitCode.PUBLISH_ERROR, configured, error=str(exc)
+            False,
+            ExitCode.PUBLISH_ERROR,
+            configured,
+            error=str(exc),
         )
     except (OSError, ValueError, GitPublishError) as exc:
         code = (
@@ -308,27 +340,21 @@ def publish(
             if mode == RunMode.FORMAL
             else ExitCode.STAGE_ERROR
         )
-        return PublishResult(False, code, configured, error=str(exc))
+        return PublishResult(
+            False,
+            code,
+            configured,
+            error=str(exc),
+        )
 
     if mode == RunMode.TEST:
         return PublishResult(
-            True, ExitCode.SUCCESS, configured,
-            git_pushed=False, remote_verified=False,
+            True,
+            ExitCode.SUCCESS,
+            configured,
+            git_pushed=False,
+            remote_verified=False,
         )
 
     try:
-        pushed, verified = _publish_git(root, relative_target.as_posix())
-        return PublishResult(
-            True, ExitCode.SUCCESS, configured,
-            git_pushed=pushed, remote_verified=verified,
-        )
-    except GitPublishUnconfirmed as exc:
-        return PublishResult(
-            False, ExitCode.PUBLISH_UNCONFIRMED, configured,
-            error=str(exc),
-        )
-    except (GitPublishError, OSError, subprocess.TimeoutExpired) as exc:
-        return PublishResult(
-            False, ExitCode.PUBLISH_ERROR, configured,
-            error=str(exc),
-        )
+ 
