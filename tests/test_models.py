@@ -1,8 +1,8 @@
-
 """Tests for the shared data models and their interface contract."""
 
 import unittest
 from dataclasses import FrozenInstanceError, fields, is_dataclass
+from typing import get_type_hints
 
 from models import (
     Candidate,
@@ -146,6 +146,111 @@ class TestDataModels(unittest.TestCase):
             with self.subTest(model=model_class.__name__):
                 self.assertEqual(actual, expected)
 
+    def test_model_field_types_are_resolvable(self):
+        model_classes = (
+            SourceRecord,
+            DownloadResult,
+            IndexParseResult,
+            Candidate,
+            NetworkResult,
+            ValidationResult,
+            FilterResult,
+            PublishResult,
+            StageResult,
+            RunSummary,
+        )
+
+        for model_class in model_classes:
+            with self.subTest(model=model_class.__name__):
+                hints = get_type_hints(model_class)
+                expected_names = {
+                    field.name for field in fields(model_class)
+                }
+
+                self.assertEqual(set(hints), expected_names)
+
+    def test_important_field_types(self):
+        expected_types = {
+            SourceRecord: {
+                "url": str,
+                "kind": SourceKind,
+                "order": int,
+            },
+            DownloadResult: {
+                "source": SourceRecord,
+                "success": bool,
+                "content": bytes,
+                "bytes_received": int,
+                "truncated": bool,
+            },
+            IndexParseResult: {
+                "index_source": SourceRecord,
+                "sources": tuple,
+                "invalid_count": int,
+                "messages": tuple,
+            },
+            Candidate: {
+                "url": str,
+                "name": str,
+                "source_kind": SourceKind,
+                "source_order": int,
+                "item_order": int,
+            },
+            NetworkResult: {
+                "success": bool,
+                "requested_url": str,
+                "content": bytes,
+                "bytes_received": int,
+                "redirects": tuple,
+            },
+            ValidationResult: {
+                "candidate": Candidate,
+                "passed": bool,
+                "stream_type": StreamType,
+                "completed": bool,
+            },
+            FilterResult: {
+                "m3u_content": str,
+                "channel_count": int,
+            },
+            PublishResult: {
+                "success": bool,
+                "exit_code": ExitCode,
+                "target_path": str,
+                "git_pushed": bool,
+                "remote_verified": bool,
+            },
+            StageResult: {
+                "stage_name": str,
+                "elapsed_seconds": float,
+                "success": bool,
+                "incomplete": bool,
+            },
+            RunSummary: {
+                "mode": RunMode,
+                "exit_code": ExitCode,
+                "stage_results": tuple,
+                "sources_attempted": int,
+                "candidates_collected": int,
+                "candidates_validated": int,
+                "candidates_passed": int,
+                "candidates_incomplete": int,
+                "channels_published": int,
+                "incomplete": bool,
+                "messages": tuple,
+            },
+        }
+
+        for model_class, expected in expected_types.items():
+            hints = get_type_hints(model_class)
+
+            for field_name, expected_type in expected.items():
+                with self.subTest(
+                    model=model_class.__name__,
+                    field=field_name,
+                ):
+                    self.assertIs(hints[field_name], expected_type)
+
     def test_all_models_are_frozen_dataclasses(self):
         model_classes = (
             SourceRecord,
@@ -181,6 +286,30 @@ class TestDataModels(unittest.TestCase):
         self.assertEqual(result.bytes_received, 0)
         self.assertFalse(result.truncated)
 
+    def test_download_result_status_combinations(self):
+        combinations = (
+            (True, False),
+            (True, True),
+            (False, True),
+            (False, False),
+        )
+
+        for success, truncated in combinations:
+            with self.subTest(
+                success=success,
+                truncated=truncated,
+            ):
+                result = DownloadResult(
+                    source=self.source,
+                    success=success,
+                    content=b"partial data" if truncated else b"complete",
+                    bytes_received=12,
+                    truncated=truncated,
+                )
+
+                self.assertEqual(result.success, success)
+                self.assertEqual(result.truncated, truncated)
+
     def test_index_parse_result_defaults(self):
         result = IndexParseResult(index_source=self.source)
 
@@ -208,6 +337,32 @@ class TestDataModels(unittest.TestCase):
         self.assertEqual(result.bytes_received, 0)
         self.assertEqual(result.redirects, ())
         self.assertIsNone(result.error)
+
+    def test_network_success_is_independent_of_http_status(self):
+        result = NetworkResult(
+            success=True,
+            requested_url="https://example.com/",
+            status_code=404,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.status_code, 404)
+
+    def test_network_success_does_not_mean_stream_validation_passed(self):
+        network_result = NetworkResult(
+            success=True,
+            requested_url="https://example.com/live.ts",
+        )
+
+        validation_result = ValidationResult(
+            candidate=self.candidate,
+            passed=False,
+            completed=True,
+            reason="Stream content validation failed.",
+        )
+
+        self.assertTrue(network_result.success)
+        self.assertFalse(validation_result.passed)
 
     def test_validation_result_defaults(self):
         result = ValidationResult(
@@ -255,6 +410,84 @@ class TestDataModels(unittest.TestCase):
         self.assertFalse(result.git_pushed)
         self.assertFalse(result.remote_verified)
         self.assertIsNone(result.error)
+
+    def test_test_mode_style_publish_does_not_require_git(self):
+        result = PublishResult(
+            success=True,
+            exit_code=ExitCode.SUCCESS,
+            target_path="output/test/iptv-test.m3u",
+            git_pushed=False,
+            remote_verified=False,
+        )
+
+        self.assertTrue(result.success)
+        self.assertFalse(result.git_pushed)
+        self.assertFalse(result.remote_verified)
+
+    def test_publish_result_can_be_pushed_but_not_verified(self):
+        result = PublishResult(
+            success=False,
+            exit_code=ExitCode.PUBLISH_UNCONFIRMED,
+            target_path="output/iptv.m3u",
+            git_pushed=True,
+            remote_verified=False,
+        )
+
+        self.assertTrue(result.git_pushed)
+        self.assertFalse(result.remote_verified)
+        self.assertEqual(
+            result.exit_code,
+            ExitCode.PUBLISH_UNCONFIRMED,
+        )
+
+    def test_publish_result_can_be_verified_after_push(self):
+        result = PublishResult(
+            success=True,
+            exit_code=ExitCode.SUCCESS,
+            target_path="output/iptv.m3u",
+            git_pushed=True,
+            remote_verified=True,
+        )
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.git_pushed)
+        self.assertTrue(result.remote_verified)
+
+    def test_publish_result_rejects_success_with_failure_exit_code(self):
+        with self.assertRaises(ValueError):
+            PublishResult(
+                success=True,
+                exit_code=ExitCode.PUBLISH_ERROR,
+                target_path="output/iptv.m3u",
+            )
+
+    def test_publish_result_rejects_failure_with_success_exit_code(self):
+        with self.assertRaises(ValueError):
+            PublishResult(
+                success=False,
+                exit_code=ExitCode.SUCCESS,
+                target_path="output/iptv.m3u",
+            )
+
+    def test_publish_result_rejects_remote_verification_without_push(self):
+        with self.assertRaises(ValueError):
+            PublishResult(
+                success=True,
+                exit_code=ExitCode.SUCCESS,
+                target_path="output/iptv.m3u",
+                git_pushed=False,
+                remote_verified=True,
+            )
+
+    def test_publish_result_rejects_remote_verification_on_failure(self):
+        with self.assertRaises(ValueError):
+            PublishResult(
+                success=False,
+                exit_code=ExitCode.PUBLISH_UNCONFIRMED,
+                target_path="output/iptv.m3u",
+                git_pushed=True,
+                remote_verified=True,
+            )
 
     def test_stage_result_defaults(self):
         result = StageResult(
