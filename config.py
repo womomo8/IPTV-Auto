@@ -13,14 +13,19 @@ not this module.
 # 1. Manual and automatic source configuration
 # ============================================================
 
+# Each item is one HTTP/HTTPS subscription source URL.
 MANUAL_SUBSCRIPTION_SOURCES: list[str] = [
     "http://1.94.31.214/live/live9/dgtv.txt",
 ]
 
+# Each item is one HTTP/HTTPS live stream URL.
 MANUAL_STREAM_URLS: list[str] = []
 
-# Temporary isolation test: disable automatic indexes.
-AUTO_INDEX_URLS: list[str] = []
+# Each item is one HTTP/HTTPS URL pointing to a plain-text
+# automatic subscription index file.
+AUTO_INDEX_URLS: list[str] = [
+    "https://raw.githubusercontent.com/womomo8/IPTV-Auto/main/auto_index.txt",
+]
 
 
 # ============================================================
