@@ -1,6 +1,7 @@
+
 IPTV 自动订阅系统开发进度
 
-文档版本：2.4
+文档版本：2.5
 配套规范：MASTER_PLAN 3.52
 最后更新：2026-11-10
 
@@ -25,12 +26,12 @@ validator.py| 已提交，静态接口核对完成，实际测试未执行
 filter.py| 已提交，静态接口核对完成，实际测试未执行
 publisher.py| 已提交，静态接口核对完成，实际测试未执行
 main.py| 已提交，静态调用关系核对完成，实际测试未执行
+GitHub Actions 工作流| 已建立，静态核对完成，运行结果待确认
 models.py 接口冻结| 尚未完成
 Python 实际测试| 尚未执行
-GitHub Actions 工作流| 尚未开始
 正式订阅发布| 尚未执行
 
-当前开发阶段：五个业务阶段的程序及统一调度程序 main.py 已完成代码编写和静态核对。下一步按 MASTER_PLAN 17、18 节实施 GitHub Actions 工作流。
+当前开发阶段：五个业务阶段的程序及统一调度程序 main.py 已完成代码编写和静态核对。GitHub Actions 工作流文件已建立并完成静态核对，正在确认修正提交后的工作流运行情况。
 
 说明：
 
@@ -40,6 +41,8 @@ GitHub Actions 工作流| 尚未开始
 4. network.py、sources.py、collector.py、normalizer.py、validator.py、filter.py、publisher.py、main.py 已提交并完成静态核对，但尚未执行实际测试。
 5. 未完成实际测试的程序不得标记为已测试。
 6. models.py 接口尚未正式冻结；正式冻结前，其他程序必须使用现有模型定义，不得自行重复定义接口结构。
+7. GitHub Actions 工作流已完成文件静态核对，但不能据此认定工作流实际运行成功。
+8. 旧工作流失败记录对应旧提交；修正提交后的新运行结果尚待确认。
 
 ---
 
@@ -54,7 +57,7 @@ GitHub Actions 工作流| 尚未开始
 6| filter.py| 待测试| 静态核对完成| 未执行| 验证结果筛选、地址去重、频道去重、生成 M3U
 7| publisher.py| 待测试| 静态核对完成| 未执行| 文件质量保护、原子替换、Git 发布
 8| main.py| 待测试| 静态调用关系核对完成| 未执行| 两轮采集及完整运行流程统一调度
-9| GitHub Actions 工作流| 未开始| 未执行| 未执行| 每日自动、手动正式、手动测试
+9| GitHub Actions 工作流| 进行中| 静态核对完成| 新提交运行待确认| 每日自动、手动正式、手动测试
 10| 自动化测试| 未开始| 未执行| 未执行| 后期统一执行测试清单
 
 共享基础文件：
@@ -76,23 +79,28 @@ config.py| 待测试| 统一运行参数、预算、并发、网络设置和人�
 日期| 测试项| 测试方式| 结果| 证据/日志| 备注
 -| -| -| -| -| 尚未执行
 
-静态核对不等于 Python 实际测试，不得将静态核对记录为功能测试通过。
+工作流运行记录：
+
+日期| 测试项| 测试方式| 结果| 证据/日志| 备注
+2026-11-10| 首次 GitHub Actions 工作流运行| push 触发| 失败| run ID 42836691565；提交 64b417793bdf19229fc140c12709e0b0237e7479| 旧版工作流运行记录
+2026-11-10| 修正后的工作流文件| GitHub main 分支文件静态核对| 通过| 修正提交 21e570930fec0d7418f7e194c5a6b63af96e2b8a| 尚未看到该提交对应的新运行记录
+
+静态核对不等于 Python 实际测试，也不等于 GitHub Actions 运行成功。
 
 ---
 
 四、当前待办
 
-1. 按 MASTER_PLAN 第十七节实施 GitHub Actions 工作流，支持每日自动正式运行、手动正式运行和手动测试运行。
-2. 每日自动运行时间为北京时间06:00，对应 GitHub Actions 前一日 UTC 22:00。
-3. 三种运行方式必须使用同一个 concurrency group，设置 "cancel-in-progress: false"，确保运行互斥。
-4. 按 MASTER_PLAN 第十六、十八节落实测试模式和正式模式隔离、任务权限及22分钟硬超时。
-5. 后期统一执行 models.py、config.py、network.py、sources.py、collector.py、normalizer.py、validator.py、filter.py、publisher.py、main.py 及其他程序的实际测试。
-6. 完成 models.py 字段类型、默认值、不可变约束和状态约束测试。
-7. 完成 CORE_FLOW.md 第八节九类程序交接核对。
-8. 完成 MASTER_PLAN 3.52 字段语义核对。
-9. 所有模型检查通过后，正式冻结 models.py 接口字段。
-10. 后续程序只能导入和使用 models.py 中的类型，不得自行定义重复接口结构。
-11. 如确实需要修改接口，必须记录变更原因、影响范围以及需要同步调整的程序。
+1. 确认修正提交后的 GitHub Actions 运行记录，核实工作流是否成功加载并触发。
+2. 如果出现新的运行失败，先读取具体失败日志，再按 MASTER_PLAN 修正，不盲目重复运行。
+3. 确认工作流运行配置符合 MASTER_PLAN 第十七、十八节。
+4. 后期统一执行 models.py、config.py、network.py、sources.py、collector.py、normalizer.py、validator.py、filter.py、publisher.py、main.py 及其他程序的实际测试。
+5. 完成 models.py 字段类型、默认值、不可变约束和状态约束测试。
+6. 完成 CORE_FLOW.md 第八节九类程序交接核对。
+7. 完成 MASTER_PLAN 3.52 字段语义核对。
+8. 所有模型检查通过后，正式冻结 models.py 接口字段。
+9. 后续程序只能导入和使用 models.py 中的类型，不得自行定义重复接口结构。
+10. 如确实需要修改接口，必须记录变更原因、影响范围以及需要同步调整的程序。
 
 接口结构性契约以 CORE_FLOW.md 第八节为参考；
 字段语义和验收要求以 MASTER_PLAN 3.52 为准；
@@ -113,7 +121,8 @@ config.py| 待测试| 统一运行参数、预算、并发、网络设置和人�
 8| filter.py 尚未执行 Python 实际测试| 筛选、地址去重、频道去重和M3U生成行为尚未验证| 待测试| 后期统一执行
 9| publisher.py 尚未执行 Python 实际测试| 文件检查、原子替换和Git发布运行行为尚未验证| 待测试| 后期统一执行
 10| main.py 尚未执行 Python 实际测试| 两轮采集和完整调度运行行为尚未验证| 待测试| 后期统一执行
-11| GitHub Actions 工作流尚未建立| 尚不能自动、手动触发完整运行| 未开始| 下一步实施
+11| 首次 GitHub Actions 工作流运行失败| 旧提交未能正常完成工作流运行| 已修正文件，待确认新运行| 已替换 iptv.yml；核对修正提交及文件内容
+12| 修正提交后的 GitHub Actions 运行记录尚未出现| 暂不能确认工作流实际运行状态| 待确认| 检查 GitHub Actions 新运行记录及日志
 
 ---
 
@@ -147,6 +156,9 @@ config.py| 待测试| 统一运行参数、预算、并发、网络设置和人�
 2026-11-10| 完成 main.py，统一调度两轮采集及整理、检测、筛选、发布流程| main.py| 已提交并核对；静态调用关系核对完成；Python实际测试尚未执行
 2026-11-10| 修正自动发现订阅来源去重范围，将人工单条直播地址纳入去重集合，避免重复进入自动订阅下载| main.py| 已核对 main 分支提交内容；静态核对完成；Python实际测试尚未执行
 2026-11-10| 更新主调度程序开发状态，下一步进入 GitHub Actions 工作流| PROGRESS.md| 文档更新；未涉及代码测试
+2026-11-10| 新增 GitHub Actions 工作流，配置每日自动正式运行、手动正式运行和手动测试运行| .github/workflows/iptv.yml| 首次运行失败；尚未确认运行原因
+2026-11-10| 修正 GitHub Actions 工作流文件结构和 YAML 层级| .github/workflows/iptv.yml| 已核对 main 分支修正提交 21e570930fec0d7418f7e194c5a6b63af96e2b8a；静态核对完成；新运行结果待确认
+2026-11-10| 更新工作流建立状态、首次失败记录和修正后的待确认事项| PROGRESS.md| 文档更新；未涉及 Python 实际测试
 
 ---
 
