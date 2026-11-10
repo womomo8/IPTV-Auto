@@ -1,15 +1,5 @@
 
-"""Publish validated IPTV M3U output with file and Git safeguards.
-
-This module owns:
-- M3U output validation.
-- Safe temporary-file creation and atomic replacement.
-- Protection of an existing formal output file.
-- Test-mode isolation.
-- Formal Git commit, push, and remote SHA verification.
-
-It does not collect, validate, filter, or generate channel data.
-"""
+"""Safe IPTV M3U publisher."""
 
 from __future__ import annotations
 
@@ -18,179 +8,132 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Optional
 
 import config
 import sources
 from models import ExitCode, FilterResult, PublishResult, RunMode
 
 
-_GIT_PUBLISH_BUDGET_SECONDS = 120
+GIT_BUDGET = 120
 
 
 class PublishError(Exception):
-    """Raised when local file publication cannot be completed."""
+    """Local publication failed."""
 
 
 class GitPublishError(Exception):
-    """Raised when Git publication fails with a known result."""
+    """Git publication failed with a known result."""
 
 
 class GitPublishUnconfirmed(Exception):
-    """Raised when the remote Git publication state cannot be confirmed."""
+    """The remote Git state could not be confirmed."""
 
 
 def _validate_m3u(content: str) -> int:
-    """Validate generated M3U text and return its valid channel count."""
-    if not isinstance(content, str):
-        raise PublishError("M3U content must be text.")
+    """Validate UTF-8 M3U text and return its channel count."""
+    if not isinstance(content, str) or not content:
+        raise PublishError("M3U content is empty or invalid.")
 
-    if not content:
-        raise PublishError("M3U content is empty.")
-
-    if content.startswith("\ufeff"):
-        raise PublishError("M3U content must not contain a UTF-8 BOM.")
-
-    if "\r" in content:
-        raise PublishError("M3U content must use LF line endings only.")
+    if content.startswith("\ufeff") or "\r" in content:
+        raise PublishError("M3U must be UTF-8 without BOM and use LF.")
 
     if not content.endswith("\n"):
-        raise PublishError("M3U content must end with LF.")
+        raise PublishError("M3U must end with LF.")
 
     lines = content[:-1].split("\n")
-
     if not lines or lines[0] != "#EXTM3U":
         raise PublishError("The first line must be #EXTM3U.")
 
-    channel_count = 0
+    count = 0
     index = 1
 
     while index < len(lines):
-        extinf_line = lines[index]
+        extinf = lines[index]
 
-        if not extinf_line.startswith("#EXTINF:"):
-            raise PublishError(
-                f"Expected #EXTINF at line {index + 1}."
-            )
+        if not extinf.startswith("#EXTINF:") or "," not in extinf:
+            raise PublishError(f"Invalid EXTINF at line {index + 1}.")
 
-        comma_position = extinf_line.find(",")
+        name = extinf.split(",", 1)[1].strip()
+        if not name:
+            raise PublishError(f"Empty channel name at line {index + 1}.")
 
-        if comma_position < 0:
-            raise PublishError(
-                f"Missing channel-name separator at line {index + 1}."
-            )
+        if index + 1 >= len(lines):
+            raise PublishError("A channel is missing its URL.")
 
-        display_name = extinf_line[comma_position + 1:].strip()
-
-        if not display_name:
-            raise PublishError(
-                f"Channel name is empty at line {index + 1}."
-            )
-
-        url_index = index + 1
-
-        if url_index >= len(lines):
-            raise PublishError(
-                f"Missing stream URL after line {index + 1}."
-            )
-
-        stream_url = lines[url_index].strip()
-
-        if not stream_url:
-            raise PublishError(
-                f"Stream URL is empty at line {url_index + 1}."
-            )
+        url = lines[index + 1].strip()
+        if not url:
+            raise PublishError(f"Empty URL at line {index + 2}.")
 
         try:
-            normalized_url = sources.normalize_source_url(stream_url)
+            normalized = sources.normalize_source_url(url)
         except (TypeError, ValueError) as exc:
-            raise PublishError(
-                f"Invalid stream URL at line {url_index + 1}: {exc}"
-            ) from exc
+            raise PublishError(f"Invalid URL: {exc}") from exc
 
-        if normalized_url != stream_url:
-            raise PublishError(
-                f"Stream URL is not normalized at line {url_index + 1}."
-            )
+        if normalized != url:
+            raise PublishError(f"URL is not normalized: {url}")
 
-        channel_count += 1
+        count += 1
         index += 2
 
-    if channel_count < 1:
-        raise PublishError("M3U must contain at least one valid channel.")
+    if count == 0:
+        raise PublishError("M3U contains no valid channels.")
 
-    return channel_count
+    return count
 
 
-def _validate_m3u_bytes(content: bytes) -> int:
-    """Decode UTF-8 strictly and validate the resulting M3U."""
-    if not isinstance(content, bytes):
-        raise PublishError("File content must be bytes.")
-
+def _validate_bytes(data: bytes) -> int:
+    """Decode strict UTF-8 and validate M3U structure."""
     try:
-        decoded = content.decode("utf-8", errors="strict")
+        return _validate_m3u(data.decode("utf-8", errors="strict"))
     except UnicodeDecodeError as exc:
         raise PublishError("M3U file is not valid UTF-8.") from exc
 
-    return _validate_m3u(decoded)
 
-
-def _write_atomically(target: Path, content: str) -> None:
-    """Write a same-directory temporary file and atomically replace target."""
+def _atomic_write(target: Path, content: str) -> None:
+    """Validate a same-directory temporary file before atomic replacement."""
     target.parent.mkdir(parents=True, exist_ok=True)
-
-    temporary_path: Optional[Path] = None
+    temporary = None
 
     try:
-        file_descriptor, temporary_name = tempfile.mkstemp(
+        fd, name = tempfile.mkstemp(
             prefix=f".{target.name}.",
             suffix=".tmp",
             dir=str(target.parent),
         )
-        temporary_path = Path(temporary_name)
+        temporary = Path(name)
 
-        encoded = content.encode("utf-8", errors="strict")
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content.encode("utf-8"))
+            stream.flush()
+            os.fsync(stream.fileno())
 
-        with os.fdopen(file_descriptor, "wb") as temporary_file:
-            temporary_file.write(encoded)
-            temporary_file.flush()
-            os.fsync(temporary_file.fileno())
-
-        # Re-read the temporary file before replacing the target.
-        temporary_bytes = temporary_path.read_bytes()
-        _validate_m3u_bytes(temporary_bytes)
-
-        os.replace(temporary_path, target)
-        temporary_path = None
+        _validate_bytes(temporary.read_bytes())
+        os.replace(temporary, target)
+        temporary = None
 
     except (OSError, UnicodeError) as exc:
-        raise PublishError(
-            f"Could not safely write output file: {exc}"
-        ) from exc
+        raise PublishError(f"Safe file replacement failed: {exc}") from exc
 
     finally:
-        if temporary_path is not None:
+        if temporary is not None:
             try:
-                temporary_path.unlink(missing_ok=True)
+                temporary.unlink(missing_ok=True)
             except OSError:
                 pass
 
 
-def _run_git(
-    repository_root: Path,
-    arguments: list[str],
+def _git(
+    root: Path,
+    args: list[str],
     timeout: float,
 ) -> subprocess.CompletedProcess[str]:
-    """Run one Git command without invoking a shell."""
+    """Run a Git command without a shell."""
     if timeout <= 0:
-        raise subprocess.TimeoutExpired(
-            cmd=["git", *arguments],
-            timeout=timeout,
-        )
+        raise subprocess.TimeoutExpired(["git", *args], timeout)
 
     return subprocess.run(
-        ["git", *arguments],
-        cwd=str(repository_root),
+        ["git", *args],
+        cwd=str(root),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -200,174 +143,192 @@ def _run_git(
     )
 
 
-def _git_output(
-    repository_root: Path,
-    arguments: list[str],
-    timeout: float = 10,
-) -> str:
-    """Run Git and return stdout, raising on command failure."""
-    result = _run_git(repository_root, arguments, timeout)
-
+def _git_text(root: Path, args: list[str], timeout: float) -> str:
+    result = _git(root, args, timeout)
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip()
         raise GitPublishError(
-            f"Git command failed ({' '.join(arguments)}): {detail}"
+            f"Git command failed ({' '.join(args)}): {detail}"
         )
-
     return result.stdout.strip()
 
 
-def _get_repository_root(start: Path) -> Path:
-    """Resolve the Git repository root."""
-    output = _git_output(
-        start,
-        ["rev-parse", "--show-toplevel"],
-    )
+def _publish_git(root: Path, relative_path: str) -> tuple[bool, bool]:
+    """Commit only the output file, push, and verify the remote SHA."""
+    deadline = time.monotonic() + GIT_BUDGET
 
-    return Path(output).resolve()
-
-
-def _get_branch(repository_root: Path) -> str:
-    """Resolve the branch to publish to."""
-    branch = os.environ.get("GITHUB_REF_NAME", "").strip()
-
-    if not branch:
-        branch = _git_output(
-            repository_root,
-            ["symbolic-ref", "--quiet", "--short", "HEAD"],
-        )
-
-    if not branch:
-        raise GitPublishError(
-            "Could not determine the target Git branch."
-        )
-
-    check = _run_git(
-        repository_root,
-        ["check-ref-format", "--branch", branch],
-        timeout=10,
-    )
-
-    if check.returncode != 0:
-        raise GitPublishError("The target Git branch name is invalid.")
-
-    return branch
-
-
-def _publish_git(
-    repository_root: Path,
-    relative_target: str,
-) -> tuple[bool, bool]:
-    """Commit only the formal output, push, and verify the remote SHA."""
-    deadline = time.monotonic() + _GIT_PUBLISH_BUDGET_SECONDS
-
-    def remaining_time() -> float:
+    def remaining() -> float:
         return deadline - time.monotonic()
 
-    branch = _get_branch(repository_root)
-
-    # Check only the formal output path. Other staged or working-tree
-    # files must not be included in this publication commit.
-    status = _git_output(
-        repository_root,
-        ["status", "--porcelain", "--", relative_target],
-    )
-
-    if status:
-        _git_output(
-            repository_root,
-            [
-                "commit",
-                "--only",
-                "-m",
-                "Update IPTV subscription",
-                "--",
-                relative_target,
-            ],
-        )
-
-    expected_sha = _git_output(
-        repository_root,
-        ["rev-parse", "HEAD"],
-    )
-
-    if remaining_time() <= 0:
-        raise GitPublishUnconfirmed(
-            "Git publication budget expired before push."
-        )
-
-    push_error: Optional[str] = None
-
     try:
-        push_result = _run_git(
-            repository_root,
-            [
-                "push",
-                "origin",
-                f"HEAD:refs/heads/{branch}",
-            ],
-            timeout=remaining_time(),
-        )
-
-        if push_result.returncode != 0:
-            push_error = (
-                push_result.stderr.strip()
-                or push_result.stdout.strip()
-                or "Git push returned a non-zero exit code."
+        branch = os.environ.get("GITHUB_REF_NAME", "").strip()
+        if not branch:
+            branch = _git_text(
+                root, ["branch", "--show-current"], remaining()
             )
 
-    except subprocess.TimeoutExpired:
-        push_error = "Git push timed out."
+        if not branch:
+            raise GitPublishError("Cannot determine the Git branch.")
 
-    except OSError as exc:
-        push_error = f"Git push could not be started: {exc}"
+        check = _git(root, ["check-ref-format", "--branch", branch], remaining())
+        if check.returncode != 0:
+            raise GitPublishError("Invalid Git branch name.")
 
-    # Always verify the remote state after a push attempt, including
-    # when the push command reports an error or times out.
-    if remaining_time() <= 0:
+        status = _git_text(
+            root, ["status", "--porcelain", "--", relative_path], remaining()
+        )
+
+        if status:
+            _git_text(root, ["add", "--", relative_path], remaining())
+            _git_text(
+                root,
+                [
+                    "commit", "--only", "-m",
+                    "Update IPTV subscription", "--", relative_path,
+                ],
+                remaining(),
+            )
+
+        expected_sha = _git_text(root, ["rev-parse", "HEAD"], remaining())
+
+    except subprocess.TimeoutExpired as exc:
+        raise GitPublishError("Git preparation exceeded its time budget.") from exc
+
+    push_error = None
+    try:
+        pushed = _git(
+            root,
+            ["push", "origin", f"HEAD:refs/heads/{branch}"],
+            remaining(),
+        )
+        if pushed.returncode != 0:
+            push_error = pushed.stderr.strip() or pushed.stdout.strip()
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        push_error = str(exc)
+
+    if remaining() <= 0:
         raise GitPublishUnconfirmed(
-            "Git push consumed the publication budget; remote SHA is unknown."
+            "Push was attempted, but no time remains to verify remote SHA."
         )
 
     try:
-        remote_output = _git_output(
-            repository_root,
-            [
-                "ls-remote",
-                "origin",
-                f"refs/heads/{branch}",
-            ],
-            timeout=remaining_time(),
+        remote = _git_text(
+            root,
+            ["ls-remote", "origin", f"refs/heads/{branch}"],
+            remaining(),
         )
-    except (
-        GitPublishError,
-        subprocess.TimeoutExpired,
-        OSError,
-    ) as exc:
+    except (GitPublishError, subprocess.TimeoutExpired, OSError) as exc:
         raise GitPublishUnconfirmed(
-            f"Could not verify remote Git SHA: {exc}"
+            f"Could not read remote SHA: {exc}"
         ) from exc
 
-    remote_sha = ""
-
-    if remote_output:
-        remote_fields = remote_output.split()
-
-        if len(remote_fields) >= 1:
-            remote_sha = remote_fields[0].strip()
-
+    remote_sha = remote.split()[0] if remote.split() else ""
     if not remote_sha:
-        raise GitPublishUnconfirmed(
-            "Remote branch SHA could not be read."
-        )
+        raise GitPublishUnconfirmed("Remote branch SHA is unavailable.")
 
     if remote_sha != expected_sha:
         detail = (
-            f"Remote SHA {remote_sha} does not match "
-            f"expected SHA {expected_sha}."
+            f"Remote SHA mismatch: expected {expected_sha}, got {remote_sha}."
+        )
+        if push_error:
+            detail += f" Push message: {push_error}"
+        raise GitPublishError(detail)
+
+    return True, True
+
+
+def publish(
+    filter_result: FilterResult,
+    mode: RunMode,
+    repository_root: Path | None = None,
+) -> PublishResult:
+    """Publish a FilterResult in formal or isolated test mode."""
+    if not isinstance(filter_result, FilterResult):
+        return PublishResult(
+            False, ExitCode.INPUT_ERROR, "",
+            error="filter_result must be a FilterResult.",
         )
 
-        if push_error:
-            detail = f"{push_error} {detail}"
+    if not isinstance(mode, RunMode):
+        return PublishResult(
+            False, ExitCode.INPUT_ERROR, "",
+            error="mode must be RunMode.FORMAL or RunMode.TEST.",
+        )
 
-        rais
+    if (
+        not isinstance(filter_result.channel_count, int)
+        or isinstance(filter_result.channel_count, bool)
+        or filter_result.channel_count < 0
+    ):
+        return PublishResult(
+            False, ExitCode.INPUT_ERROR, "",
+            error="channel_count must be a non-negative integer.",
+        )
+
+    configured = (
+        config.FORMAL_OUTPUT_PATH
+        if mode == RunMode.FORMAL
+        else config.TEST_OUTPUT_PATH
+    )
+    target = Path(configured)
+
+    try:
+        if target.is_absolute() or ".." in target.parts:
+            raise PublishError("Output path must stay inside the repository.")
+
+        root = Path(repository_root or Path.cwd()).resolve()
+
+        if mode == RunMode.FORMAL:
+            root_text = _git_text(
+                root, ["rev-parse", "--show-toplevel"], 10
+            )
+            root = Path(root_text).resolve()
+
+        absolute_target = (root / target).resolve()
+        relative_target = absolute_target.relative_to(root)
+
+        actual_count = _validate_m3u(filter_result.m3u_content)
+        if actual_count != filter_result.channel_count:
+            raise PublishError(
+                "Declared channel_count does not match parsed M3U."
+            )
+
+        if mode == RunMode.FORMAL and absolute_target.exists():
+            _validate_bytes(absolute_target.read_bytes())
+
+        _atomic_write(absolute_target, filter_result.m3u_content)
+
+    except PublishError as exc:
+        return PublishResult(
+            False, ExitCode.PUBLISH_ERROR, configured, error=str(exc)
+        )
+    except (OSError, ValueError, GitPublishError) as exc:
+        code = (
+            ExitCode.PUBLISH_ERROR
+            if mode == RunMode.FORMAL
+            else ExitCode.STAGE_ERROR
+        )
+        return PublishResult(False, code, configured, error=str(exc))
+
+    if mode == RunMode.TEST:
+        return PublishResult(
+            True, ExitCode.SUCCESS, configured,
+            git_pushed=False, remote_verified=False,
+        )
+
+    try:
+        pushed, verified = _publish_git(root, relative_target.as_posix())
+        return PublishResult(
+            True, ExitCode.SUCCESS, configured,
+            git_pushed=pushed, remote_verified=verified,
+        )
+    except GitPublishUnconfirmed as exc:
+        return PublishResult(
+            False, ExitCode.PUBLISH_UNCONFIRMED, configured,
+            error=str(exc),
+        )
+    except (GitPublishError, OSError, subprocess.TimeoutExpired) as exc:
+        return PublishResult(
+            False, ExitCode.PUBLISH_ERROR, configured,
+            error=str(exc),
+        )
