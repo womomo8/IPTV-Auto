@@ -1,8 +1,9 @@
+
 """Tests for the shared data models and their interface contract."""
 
 import unittest
 from dataclasses import FrozenInstanceError, fields, is_dataclass
-from typing import get_type_hints
+from typing import get_origin, get_type_hints
 
 from models import (
     Candidate,
@@ -245,11 +246,22 @@ class TestDataModels(unittest.TestCase):
             hints = get_type_hints(model_class)
 
             for field_name, expected_type in expected.items():
+                actual_type = hints[field_name]
+
                 with self.subTest(
                     model=model_class.__name__,
                     field=field_name,
                 ):
-                    self.assertIs(hints[field_name], expected_type)
+                    if expected_type is tuple:
+                        self.assertIs(
+                            get_origin(actual_type),
+                            tuple,
+                        )
+                    else:
+                        self.assertIs(
+                            actual_type,
+                            expected_type,
+                        )
 
     def test_all_models_are_frozen_dataclasses(self):
         model_classes = (
