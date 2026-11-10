@@ -171,7 +171,7 @@ class TestCollectionResults(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(results), 1)
         self.assertFalse(results[0].success)
-        self.assertTrue(results[0].truncated)
+        self.assertFalse(results[0].truncated)
         self.assertEqual(results[0].status_code, 404)
         self.assertIn("404", results[0].error)
 
@@ -198,7 +198,7 @@ class TestCollectionResults(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertFalse(results[0].success)
-        self.assertTrue(results[0].truncated)
+        self.assertFalse(results[0].truncated)
         self.assertIn("status is missing", results[0].error)
 
     async def test_failed_partial_download_is_marked_truncated(self):
@@ -262,7 +262,6 @@ class TestCollectionDeadlinesAndLimits(
 
     async def test_expired_deadline_starts_no_download(self):
         source = make_source("https://example.com/live.m3u")
-
         request = AsyncMock()
 
         with patch.object(
@@ -316,4 +315,36 @@ class TestCollectionDeadlinesAndLimits(
             "MAX_DOWNLOAD_TARGETS",
             2,
         ):
-            with self.assertRaises(Val
+            with self.assertRaises(ValueError):
+                await collector.collect_sources(
+                    sources,
+                    deadline=asyncio.get_running_loop().time() + 2,
+                )
+
+    async def test_rejects_source_count_over_queue_capacity(self):
+        sources = (
+            make_source("https://example.com/one.m3u", order=1),
+            make_source("https://example.com/two.m3u", order=2),
+        )
+
+        with (
+            patch.object(
+                collector.config,
+                "MAX_CONCURRENT_DOWNLOADS",
+                1,
+            ),
+            patch.object(
+                collector.config,
+                "DOWNLOAD_WAITING_QUEUE_LIMIT",
+                0,
+            ),
+        ):
+            with self.assertRaises(ValueError):
+                await collector.collect_sources(
+                    sources,
+                    deadline=asyncio.get_running_loop().time() + 2,
+                )
+
+
+if __name__ == "__main__":
+    unittest.main()
