@@ -98,8 +98,22 @@ async def _download_one(
             )
 
         status_code = result.status_code
+
+        # A size-limit response or an interrupted response read is
+        # incomplete even when no body bytes were received.
+        # Other failed requests with partial bytes are also incomplete.
         truncated = (
             result.error == "Response exceeded read limit."
+            or (
+                result.error is not None
+                and result.error.startswith(
+                    "Response read interrupted:"
+                )
+            )
+            or (
+                not result.success
+                and result.bytes_received > 0
+            )
         )
 
         http_success = (
