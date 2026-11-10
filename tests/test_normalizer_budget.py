@@ -33,13 +33,20 @@ class TestNormalizerBudget(unittest.TestCase):
             truncated=False,
         )
 
-        # First call creates the deadline.
-        # Second call checks the first subscription line.
-        # Third call simulates expiration on the next line.
+        # Deadline creation: 100 + 1 = 101.
+        # The first four checks remain before the deadline.
+        # The next check occurs during parsing and exceeds it.
         with patch.object(
             normalizer.time,
             "monotonic",
-            side_effect=[100.0, 100.0, 102.0],
+            side_effect=[
+                100.0,  # Create deadline
+                100.0,  # Initial budget check
+                100.0,  # After sorting
+                100.0,  # Before processing subscription
+                100.0,  # First M3U line
+                102.0,  # Second M3U line: expired
+            ],
         ):
             with patch.object(
                 normalizer.config,
