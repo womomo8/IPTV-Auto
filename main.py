@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import logging
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
 
@@ -65,6 +66,7 @@ def _finish(
     exit_code: ExitCode,
     stage_results: Sequence[StageResult],
     *,
+    cleanup_started: float | None = None,
     sources_attempted: int = 0,
     candidates_collected: int = 0,
     candidates_validated: int = 0,
@@ -74,11 +76,29 @@ def _finish(
     incomplete: bool = False,
     messages: Sequence[str] = (),
 ) -> int:
-    """Build the shared run summary."""
+    """Build the shared run summary and record cleanup duration."""
+    final_stages = list(stage_results)
+
+    if cleanup_started is not None:
+        if final_stages and final_stages[-1].stage_name == "收尾":
+            final_stages[-1] = replace(
+                final_stages[-1],
+                elapsed_seconds=0.0,
+            )
+        else:
+            final_stages.append(
+                StageResult(
+                    stage_name="收尾",
+                    elapsed_seconds=0.0,
+                    success=True,
+                    incomplete=incomplete,
+                )
+            )
+
     summary = RunSummary(
         mode=mode,
         exit_code=exit_code,
-        stage_results=tuple(stage_results),
+        stage_results=tuple(final_stages),
         sources_attempted=sources_attempted,
         candidates_collected=candidates_collected,
         candidates_validated=candidates_validated,
@@ -88,6 +108,21 @@ def _finish(
         incomplete=incomplete,
         messages=tuple(messages),
     )
+
+    if cleanup_started is not None:
+        cleanup_elapsed = max(
+            0.0,
+            time.monotonic() - cleanup_started,
+        )
+        final_stages[-1] = replace(
+            final_stages[-1],
+            elapsed_seconds=cleanup_elapsed,
+        )
+        summary = replace(
+            summary,
+            stage_results=tuple(final_stages),
+        )
+
     _log_summary(summary)
     return int(exit_code)
 
@@ -139,8 +174,6 @@ async def _collect_two_rounds(
         :min(config.MAX_AUTO_INDEX_DOWNLOADS, remaining_slots)
     ]
 
-    # Track selected sources that never started because a deadline
-    # had already expired or the bounded queue could not start them.
     not_started = 0
 
     # Round one: automatic index downloads.
@@ -448,8 +481,9 @@ async def run_pipeline(mode: RunMode) -> int:
                 publish_result.error or "Publication failed."
             )
 
-        # Stage 6: Summary
+        # Stage 6: Summary and cleanup.
         current_stage = "收尾"
+        cleanup_started = time.monotonic()
         stage_results.append(
             StageResult(
                 stage_name=current_stage,
@@ -463,6 +497,7 @@ async def run_pipeline(mode: RunMode) -> int:
             mode,
             publish_result.exit_code,
             stage_results,
+            cleanup_started=cleanup_started,
             sources_attempted=sources_attempted,
             candidates_collected=candidates_collected,
             candidates_validated=candidates_validated,
@@ -500,10 +535,13 @@ async def run_pipeline(mode: RunMode) -> int:
             f"{type(exc).__name__}: {exc}"
         )
 
+        cleanup_started = time.monotonic()
+
         return _finish(
             mode,
             ExitCode.STAGE_ERROR,
             stage_results,
+            cleanup_started=cleanup_started,
             sources_attempted=sources_attempted,
             candidates_collected=candidates_collected,
             candidates_validated=candidates_validated,
