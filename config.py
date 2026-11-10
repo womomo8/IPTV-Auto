@@ -1,10 +1,12 @@
 
 """Central configuration for the IPTV automation project.
 
-All shared runtime limits, budgets, network settings, output paths,
-and manually supplied sources are defined in this module.
+All shared runtime limits, budgets, network settings,
+output paths, and manually supplied sources are defined
+in this module.
 
-Business logic belongs to the corresponding program, not this module.
+Business logic belongs to the corresponding program,
+not this module.
 """
 
 # ============================================================
@@ -12,7 +14,9 @@ Business logic belongs to the corresponding program, not this module.
 # ============================================================
 
 # Each item is one HTTP/HTTPS subscription source URL.
-MANUAL_SUBSCRIPTION_SOURCES: list[str] = []
+MANUAL_SUBSCRIPTION_SOURCES: list[str] = [
+    "http://1.94.31.214/live/live9/dgtv.txt",
+]
 
 # Each item is one HTTP/HTTPS live stream URL.
 MANUAL_STREAM_URLS: list[str] = []
