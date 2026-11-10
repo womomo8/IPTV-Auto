@@ -139,6 +139,10 @@ async def _collect_two_rounds(
         :min(config.MAX_AUTO_INDEX_DOWNLOADS, remaining_slots)
     ]
 
+    # Track selected sources that never started because a deadline
+    # had already expired or the bounded queue could not start them.
+    not_started = 0
+
     # Round one: automatic index downloads.
     if selected_indexes and loop.time() < index_deadline:
         index_results = await collector.collect_sources(
@@ -148,6 +152,11 @@ async def _collect_two_rounds(
     else:
         index_results = ()
 
+    not_started += max(
+        0,
+        len(selected_indexes) - len(index_results),
+    )
+
     # Download manual subscription sources.
     if selected_manual and loop.time() < collection_deadline:
         manual_results = await collector.collect_sources(
@@ -156,6 +165,11 @@ async def _collect_two_rounds(
         )
     else:
         manual_results = ()
+
+    not_started += max(
+        0,
+        len(selected_manual) - len(manual_results),
+    )
 
     # Manual streams, manual subscriptions, and selected index URLs
     # have higher priority than discovered automatic subscriptions.
@@ -212,6 +226,11 @@ async def _collect_two_rounds(
     else:
         automatic_results = ()
 
+    not_started += max(
+        0,
+        len(selected_automatic) - len(automatic_results),
+    )
+
     download_results = (
         tuple(manual_results)
         + tuple(automatic_results)
@@ -224,9 +243,12 @@ async def _collect_two_rounds(
     )
 
     attempted = len(all_results)
-    incomplete = any(
+
+    cancelled_or_truncated = any(
         result.truncated for result in all_results
     )
+
+    incomplete = cancelled_or_truncated or not_started > 0
 
     logger.info(
         "采集完成：索引尝试=%d，人工订阅尝试=%d，自动订阅尝试=%d",
@@ -239,6 +261,17 @@ async def _collect_two_rounds(
         attempted,
         len(discovered_sources),
     )
+
+    if not_started > 0:
+        logger.warning(
+            "采集预算截断：%d 个已选来源未能启动下载。",
+            not_started,
+        )
+
+    if cancelled_or_truncated:
+        logger.warning(
+            "采集存在已启动但被取消或读取超限的下载结果。"
+        )
 
     return download_results, attempted, incomplete
 
@@ -278,6 +311,14 @@ async def run_pipeline(mode: RunMode) -> int:
             run_incomplete or collection_incomplete
         )
 
+        collection_message = None
+        if collection_incomplete:
+            collection_message = (
+                "采集未完整完成：部分已选来源未能启动，"
+                "或已启动下载被取消、读取超限。"
+            )
+            messages.append(collection_message)
+
         elapsed = time.monotonic() - stage_started
         stage_results.append(
             StageResult(
@@ -285,6 +326,7 @@ async def run_pipeline(mode: RunMode) -> int:
                 elapsed_seconds=elapsed,
                 success=True,
                 incomplete=collection_incomplete,
+                message=collection_message,
             )
         )
 
