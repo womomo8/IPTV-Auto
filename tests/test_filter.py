@@ -2,7 +2,6 @@
 """Business tests for validated candidate filtering and M3U generation."""
 
 import unittest
-from unittest.mock import patch
 
 import filter as iptv_filter
 from models import Candidate, SourceKind, StreamType, ValidationResult
@@ -43,32 +42,17 @@ def make_result(candidate, passed=True, completed=True):
 class TestFilterEligibility(unittest.TestCase):
 
     def test_only_completed_passed_candidates_are_kept(self):
-        valid = make_candidate(
-            "https://example.com/valid.ts",
-            "Valid",
-        )
-        failed = make_candidate(
-            "https://example.com/failed.ts",
-            "Failed",
-            item_order=2,
-        )
+        valid = make_candidate("https://example.com/valid.ts", "Valid")
+        failed = make_candidate("https://example.com/failed.ts", "Failed")
         incomplete = make_candidate(
-            "https://example.com/incomplete.ts",
-            "Incomplete",
-            item_order=3,
+            "https://example.com/incomplete.ts", "Incomplete"
         )
 
-        result = iptv_filter.filter_candidates(
-            (
-                make_result(valid),
-                make_result(failed, passed=False),
-                make_result(
-                    incomplete,
-                    passed=False,
-                    completed=False,
-                ),
-            )
-        )
+        result = iptv_filter.filter_candidates((
+            make_result(valid),
+            make_result(failed, passed=False),
+            make_result(incomplete, passed=False, completed=False),
+        ))
 
         self.assertEqual(result.channel_count, 1)
         self.assertIn("Valid", result.m3u_content)
@@ -82,14 +66,8 @@ class TestFilterEligibility(unittest.TestCase):
         self.assertEqual(result.m3u_content, "#EXTM3U\n")
 
     def test_empty_channel_name_is_skipped(self):
-        candidate = make_candidate(
-            "https://example.com/live.ts",
-            "   ",
-        )
-
-        result = iptv_filter.filter_candidates(
-            (make_result(candidate),)
-        )
+        candidate = make_candidate("https://example.com/live.ts", "   ")
+        result = iptv_filter.filter_candidates((make_result(candidate),))
 
         self.assertEqual(result.channel_count, 0)
 
@@ -101,28 +79,23 @@ class TestFilterOrderingAndDeduplication(unittest.TestCase):
             "https://example.com/auto.ts",
             "Automatic",
             SourceKind.AUTO_SUBSCRIPTION,
-            1,
         )
         manual = make_candidate(
             "https://example.com/manual.ts",
             "Manual",
             SourceKind.MANUAL_SUBSCRIPTION,
-            2,
         )
         single = make_candidate(
             "https://example.com/single.ts",
             "Single",
             SourceKind.MANUAL_STREAM,
-            3,
         )
 
-        result = iptv_filter.filter_candidates(
-            (
-                make_result(automatic),
-                make_result(single),
-                make_result(manual),
-            )
-        )
+        result = iptv_filter.filter_candidates((
+            make_result(automatic),
+            make_result(single),
+            make_result(manual),
+        ))
 
         self.assertEqual(
             result.m3u_content.splitlines()[1::2],
@@ -139,26 +112,24 @@ class TestFilterOrderingAndDeduplication(unittest.TestCase):
             "Later",
             source_order=2,
         )
-        earlier_item = make_candidate(
+        first = make_candidate(
             "https://example.com/first.ts",
             "First",
             source_order=1,
             item_order=1,
         )
-        later_item = make_candidate(
+        second = make_candidate(
             "https://example.com/second.ts",
             "Second",
             source_order=1,
             item_order=2,
         )
 
-        result = iptv_filter.filter_candidates(
-            (
-                make_result(later),
-                make_result(later_item),
-                make_result(earlier_item),
-            )
-        )
+        result = iptv_filter.filter_candidates((
+            make_result(later),
+            make_result(second),
+            make_result(first),
+        ))
 
         self.assertEqual(
             result.m3u_content.splitlines()[1::2],
@@ -181,12 +152,10 @@ class TestFilterOrderingAndDeduplication(unittest.TestCase):
             SourceKind.AUTO_SUBSCRIPTION,
         )
 
-        result = iptv_filter.filter_candidates(
-            (
-                make_result(automatic),
-                make_result(manual),
-            )
-        )
+        result = iptv_filter.filter_candidates((
+            make_result(automatic),
+            make_result(manual),
+        ))
 
         self.assertEqual(result.channel_count, 1)
         self.assertIn(",Manual\n", result.m3u_content)
@@ -205,12 +174,10 @@ class TestFilterOrderingAndDeduplication(unittest.TestCase):
             item_order=2,
         )
 
-        result = iptv_filter.filter_candidates(
-            (
-                make_result(first),
-                make_result(second),
-            )
-        )
+        result = iptv_filter.filter_candidates((
+            make_result(first),
+            make_result(second),
+        ))
 
         self.assertEqual(result.channel_count, 1)
         self.assertIn("Channel One", result.m3u_content)
@@ -225,19 +192,17 @@ class TestChannelIdentityDeduplication(unittest.TestCase):
             "First",
             tvg_id="café",
         )
-        same_normalized = make_candidate(
+        second = make_candidate(
             "https://example.com/two.ts",
             "Second",
             tvg_id="cafe\u0301",
             item_order=2,
         )
 
-        result = iptv_filter.filter_candidates(
-            (
-                make_result(first),
-                make_result(same_normalized),
-            )
-        )
+        result = iptv_filter.filter_candidates((
+            make_result(first),
+            make_result(second),
+        ))
 
         self.assertEqual(result.channel_count, 1)
 
@@ -254,12 +219,10 @@ class TestChannelIdentityDeduplication(unittest.TestCase):
             item_order=2,
         )
 
-        result = iptv_filter.filter_candidates(
-            (
-                make_result(lower),
-                make_result(upper),
-            )
-        )
+        result = iptv_filter.filter_candidates((
+            make_result(lower),
+            make_result(upper),
+        ))
 
         self.assertEqual(result.channel_count, 2)
 
@@ -276,12 +239,10 @@ class TestChannelIdentityDeduplication(unittest.TestCase):
             item_order=2,
         )
 
-        result = iptv_filter.filter_candidates(
-            (
-                make_result(first),
-                make_result(second),
-            )
-        )
+        result = iptv_filter.filter_candidates((
+            make_result(first),
+            make_result(second),
+        ))
 
         self.assertEqual(result.channel_count, 1)
         self.assertIn("Sports Channel", result.m3u_content)
@@ -299,12 +260,10 @@ class TestChannelIdentityDeduplication(unittest.TestCase):
             item_order=2,
         )
 
-        result = iptv_filter.filter_candidates(
-            (
-                make_result(first),
-                make_result(second),
-            )
-        )
+        result = iptv_filter.filter_candidates((
+            make_result(first),
+            make_result(second),
+        ))
 
         self.assertEqual(result.channel_count, 2)
 
@@ -320,12 +279,10 @@ class TestChannelIdentityDeduplication(unittest.TestCase):
             item_order=2,
         )
 
-        result = iptv_filter.filter_candidates(
-            (
-                make_result(with_id),
-                make_result(without_id),
-            )
-        )
+        result = iptv_filter.filter_candidates((
+            make_result(with_id),
+            make_result(without_id),
+        ))
 
         self.assertEqual(result.channel_count, 2)
 
@@ -341,12 +298,10 @@ class TestChannelIdentityDeduplication(unittest.TestCase):
             item_order=2,
         )
 
-        result = iptv_filter.filter_candidates(
-            (
-                make_result(missing),
-                make_result(empty),
-            )
-        )
+        result = iptv_filter.filter_candidates((
+            make_result(missing),
+            make_result(empty),
+        ))
 
         self.assertEqual(result.channel_count, 1)
 
@@ -362,4 +317,46 @@ class TestM3UGeneration(unittest.TestCase):
             group_title="Sports",
         )
 
-        result = iptv_filter.filter_cand
+        result = iptv_filter.filter_candidates((make_result(candidate),))
+
+        self.assertEqual(result.channel_count, 1)
+        self.assertEqual(
+            result.m3u_content,
+            '#EXTM3U\n'
+            '#EXTINF:-1 tvg-id="channel-1" '
+            'tvg-name="Channel" group-title="Sports",Channel\n'
+            'https://example.com/live.ts\n',
+        )
+
+    def test_missing_optional_fields_are_omitted(self):
+        candidate = make_candidate(
+            "https://example.com/live.ts",
+            "Channel",
+        )
+
+        result = iptv_filter.filter_candidates((make_result(candidate),))
+
+        self.assertEqual(
+            result.m3u_content.splitlines()[1],
+            '#EXTINF:-1 tvg-name="Channel",Channel',
+        )
+
+    def test_quotes_and_line_breaks_are_cleaned(self):
+        candidate = make_candidate(
+            "https://example.com/live.ts",
+            'News "HD"\nChannel',
+            tvg_id='id"\nvalue',
+            group_title='Group"\nName',
+        )
+
+        result = iptv_filter.filter_candidates((make_result(candidate),))
+
+        self.assertEqual(result.channel_count, 1)
+        self.assertIn("tvg-id=\"id' value\"", result.m3u_content)
+        self.assertIn("tvg-name=\"News 'HD' Channel\"", result.m3u_content)
+        self.assertIn("group-title=\"Group' Name\"", result.m3u_content)
+        self.assertNotIn("\r", result.m3u_content)
+
+
+if __name__ == "__main__":
+    unittest.main()
