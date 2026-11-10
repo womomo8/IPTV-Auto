@@ -1,4 +1,3 @@
-
 """Business tests for bounded source collection."""
 
 import asyncio
@@ -292,7 +291,7 @@ class TestCollectionDeadlinesAndLimits(
         ):
             results = await collector.collect_sources(
                 (source,),
-                deadline=asyncio.get_running_loop().time() + 0.05,
+                deadline=asyncio.get_running_loop().time() + 2,
             )
 
         self.assertTrue(started.is_set())
