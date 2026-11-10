@@ -1,9 +1,5 @@
 
-"""Main orchestration for the IPTV automation pipeline.
-
-This module coordinates the five business stages.
-Business logic remains in the corresponding modules.
-"""
+"""Main orchestration for the IPTV automation pipeline."""
 
 from __future__ import annotations
 
@@ -35,7 +31,7 @@ logger = logging.getLogger("iptv.main")
 
 
 def _log_summary(summary: RunSummary) -> None:
-    """Print a concise and stable run summary."""
+    """Print a concise run summary."""
     logger.info("========== IPTV RUN SUMMARY ==========")
     logger.info("运行模式：%s", summary.mode.value)
     logger.info("退出码：%s", int(summary.exit_code))
@@ -55,7 +51,6 @@ def _log_summary(summary: RunSummary) -> None:
             stage.success,
             stage.incomplete,
         )
-
         if stage.message:
             logger.info("阶段说明：%s", stage.message)
 
@@ -79,7 +74,7 @@ def _finish(
     incomplete: bool = False,
     messages: Sequence[str] = (),
 ) -> int:
-    """Build the shared run summary and return the process exit code."""
+    """Build the shared run summary."""
     summary = RunSummary(
         mode=mode,
         exit_code=exit_code,
@@ -93,7 +88,6 @@ def _finish(
         incomplete=incomplete,
         messages=tuple(messages),
     )
-
     _log_summary(summary)
     return int(exit_code)
 
@@ -101,11 +95,7 @@ def _finish(
 async def _collect_two_rounds(
     collection_start: float,
 ) -> tuple[tuple, int, bool]:
-    """Execute index, manual-subscription, and automatic-subscription downloads.
-
-    All download rounds share one collection deadline.
-    The first index round additionally has its own 30-second sub-deadline.
-    """
+    """Run index and subscription downloads under shared deadlines."""
     loop = asyncio.get_running_loop()
 
     collection_deadline = (
@@ -120,19 +110,22 @@ async def _collect_two_rounds(
         auto_index_urls=config.AUTO_INDEX_URLS,
     )
 
+    manual_streams = tuple(
+        item
+        for item in all_sources
+        if item.kind == SourceKind.MANUAL_STREAM
+    )
     manual_subscriptions = tuple(
         item
         for item in all_sources
         if item.kind == SourceKind.MANUAL_SUBSCRIPTION
     )
-
     automatic_indexes = tuple(
         item
         for item in all_sources
         if item.kind == SourceKind.AUTO_INDEX
     )
 
-    # Manual subscriptions have first priority for the 30 source slots.
     selected_manual = manual_subscriptions[
         :config.MAX_DOWNLOAD_TARGETS
     ]
@@ -146,8 +139,7 @@ async def _collect_two_rounds(
         :min(config.MAX_AUTO_INDEX_DOWNLOADS, remaining_slots)
     ]
 
-    # Round one: download automatic index files.
-    # This call starts immediately so the 30-second sub-budget is real.
+    # Round one: automatic index downloads.
     if selected_indexes and loop.time() < index_deadline:
         index_results = await collector.collect_sources(
             selected_indexes,
@@ -156,7 +148,7 @@ async def _collect_two_rounds(
     else:
         index_results = ()
 
-    # Download manual subscription sources under the shared 3-minute budget.
+    # Download manual subscription sources.
     if selected_manual and loop.time() < collection_deadline:
         manual_results = await collector.collect_sources(
             selected_manual,
@@ -165,18 +157,18 @@ async def _collect_two_rounds(
     else:
         manual_results = ()
 
-    # Parse downloaded index files. sources.py performs no network access.
-    discovered_sources: list[SourceRecord] = []
-
+    # Manual streams, manual subscriptions, and selected index URLs
+    # have higher priority than discovered automatic subscriptions.
     seen_urls = {
-        item.url for item in manual_subscriptions
+        item.url
+        for item in manual_streams + manual_subscriptions
     }
-    seen_urls.update(
-        item.url for item in selected_indexes
-    )
+    seen_urls.update(item.url for item in selected_indexes)
 
+    discovered_sources: list[SourceRecord] = []
     next_auto_order = 0
 
+    # sources.py only parses downloaded index content; it does no I/O.
     for download_result in index_results:
         parsed = sources.parse_index_download(download_result)
 
@@ -200,7 +192,7 @@ async def _collect_two_rounds(
             )
 
     # Round two: automatic subscription downloads.
-    # Failed index downloads still consume their original source slots.
+    # Only index downloads actually started consume source slots.
     automatic_slots = max(
         0,
         config.MAX_DOWNLOAD_TARGETS
@@ -233,8 +225,7 @@ async def _collect_two_rounds(
 
     attempted = len(all_results)
     incomplete = any(
-        result.truncated
-        for result in all_results
+        result.truncated for result in all_results
     )
 
     logger.info(
@@ -243,7 +234,6 @@ async def _collect_two_rounds(
         len(manual_results),
         len(automatic_results),
     )
-
     logger.info(
         "采集来源总数=%d，自动发现来源=%d",
         attempted,
@@ -273,21 +263,22 @@ async def run_pipeline(mode: RunMode) -> int:
     current_stage = "启动"
 
     try:
-        # --------------------------------------------------------
         # Stage 1: Collection
-        # --------------------------------------------------------
         current_stage = "采集"
         stage_started = time.monotonic()
         collection_start = asyncio.get_running_loop().time()
 
-        download_results, sources_attempted, collection_incomplete = (
-            await _collect_two_rounds(collection_start)
+        (
+            download_results,
+            sources_attempted,
+            collection_incomplete,
+        ) = await _collect_two_rounds(collection_start)
+
+        run_incomplete = (
+            run_incomplete or collection_incomplete
         )
 
-        run_incomplete = run_incomplete or collection_incomplete
-
         elapsed = time.monotonic() - stage_started
-
         stage_results.append(
             StageResult(
                 stage_name=current_stage,
@@ -297,9 +288,7 @@ async def run_pipeline(mode: RunMode) -> int:
             )
         )
 
-        # --------------------------------------------------------
         # Stage 2: Normalization
-        # --------------------------------------------------------
         current_stage = "整理"
         stage_started = time.monotonic()
 
@@ -308,14 +297,12 @@ async def run_pipeline(mode: RunMode) -> int:
         )
 
         elapsed = time.monotonic() - stage_started
-
         if elapsed > config.NORMALIZATION_BUDGET_SECONDS:
             raise TimeoutError(
                 "Normalization stage exceeded its time budget."
             )
 
         candidates_collected = len(candidates)
-
         stage_results.append(
             StageResult(
                 stage_name=current_stage,
@@ -329,9 +316,7 @@ async def run_pipeline(mode: RunMode) -> int:
             candidates_collected,
         )
 
-        # --------------------------------------------------------
         # Stage 3: Validation
-        # --------------------------------------------------------
         current_stage = "检测"
         stage_started = time.monotonic()
 
@@ -342,13 +327,11 @@ async def run_pipeline(mode: RunMode) -> int:
         elapsed = time.monotonic() - stage_started
 
         candidates_validated = len(validation_results)
-
         candidates_passed = sum(
             1
             for result in validation_results
             if result.completed and result.passed
         )
-
         candidates_incomplete = sum(
             1
             for result in validation_results
@@ -356,7 +339,175 @@ async def run_pipeline(mode: RunMode) -> int:
         )
 
         detection_incomplete = candidates_incomplete > 0
-        run_incomplete = run_incomplete or detection_incomplete
+        run_incomplete = (
+            run_incomplete or detection_incomplete
+        )
 
         stage_results.append(
-            Sta
+            StageResult(
+                stage_name=current_stage,
+                elapsed_seconds=elapsed,
+                success=True,
+                incomplete=detection_incomplete,
+                message=(
+                    f"有 {candidates_incomplete} 条候选未完成验证。"
+                    if detection_incomplete
+                    else None
+                ),
+            )
+        )
+
+        # Stage 4: Filtering
+        current_stage = "筛选"
+        stage_started = time.monotonic()
+
+        filter_result = channel_filter.filter_candidates(
+            validation_results
+        )
+
+        elapsed = time.monotonic() - stage_started
+        stage_results.append(
+            StageResult(
+                stage_name=current_stage,
+                elapsed_seconds=elapsed,
+                success=True,
+            )
+        )
+
+        logger.info(
+            "筛选完成：最终有效频道 %d 条。",
+            filter_result.channel_count,
+        )
+
+        # Stage 5: Publication
+        current_stage = "发布"
+        stage_started = time.monotonic()
+
+        publish_result = publisher.publish(
+            filter_result,
+            mode,
+            repository_root=Path(__file__).resolve().parent,
+        )
+
+        elapsed = time.monotonic() - stage_started
+        stage_results.append(
+            StageResult(
+                stage_name=current_stage,
+                elapsed_seconds=elapsed,
+                success=publish_result.success,
+                message=publish_result.error,
+            )
+        )
+
+        if publish_result.success:
+            channels_published = filter_result.channel_count
+        else:
+            messages.append(
+                publish_result.error or "Publication failed."
+            )
+
+        # Stage 6: Summary
+        current_stage = "收尾"
+        stage_results.append(
+            StageResult(
+                stage_name=current_stage,
+                elapsed_seconds=0.0,
+                success=True,
+                incomplete=run_incomplete,
+            )
+        )
+
+        return _finish(
+            mode,
+            publish_result.exit_code,
+            stage_results,
+            sources_attempted=sources_attempted,
+            candidates_collected=candidates_collected,
+            candidates_validated=candidates_validated,
+            candidates_passed=candidates_passed,
+            candidates_incomplete=candidates_incomplete,
+            channels_published=channels_published,
+            incomplete=run_incomplete,
+            messages=messages,
+        )
+
+    except Exception as exc:
+        elapsed = 0.0
+        if "stage_started" in locals():
+            elapsed = max(
+                0.0,
+                time.monotonic() - stage_started,
+            )
+
+        logger.exception(
+            "%s 阶段发生不可恢复错误。",
+            current_stage,
+        )
+
+        stage_results.append(
+            StageResult(
+                stage_name=current_stage,
+                elapsed_seconds=elapsed,
+                success=False,
+                message=f"{type(exc).__name__}: {exc}",
+            )
+        )
+
+        messages.append(
+            f"{current_stage}阶段失败："
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return _finish(
+            mode,
+            ExitCode.STAGE_ERROR,
+            stage_results,
+            sources_attempted=sources_attempted,
+            candidates_collected=candidates_collected,
+            candidates_validated=candidates_validated,
+            candidates_passed=candidates_passed,
+            candidates_incomplete=candidates_incomplete,
+            channels_published=channels_published,
+            incomplete=run_incomplete,
+            messages=messages,
+        )
+
+
+def main() -> int:
+    """Command-line entry point."""
+    parser = argparse.ArgumentParser(
+        description="China IPTV automatic subscription pipeline."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("formal", "test"),
+        default="formal",
+        help=(
+            "formal: generate and publish the official subscription; "
+            "test: write only the isolated test output."
+        ),
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable debug logging.",
+    )
+
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    mode = RunMode(args.mode)
+
+    try:
+        return asyncio.run(run_pipeline(mode))
+    except KeyboardInterrupt:
+        logger.warning("运行被手动中断。")
+        return int(ExitCode.STAGE_ERROR)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
