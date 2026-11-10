@@ -1,8 +1,8 @@
 
-"""Tests for the shared data models."""
+"""Tests for the shared data models and their interface contract."""
 
 import unittest
-from dataclasses import FrozenInstanceError, is_dataclass
+from dataclasses import FrozenInstanceError, fields, is_dataclass
 
 from models import (
     Candidate,
@@ -45,11 +45,17 @@ class TestEnums(unittest.TestCase):
         self.assertEqual(StreamType.UNKNOWN.value, "unknown")
 
     def test_exit_code_values(self):
-        self.assertEqual(int(ExitCode.SUCCESS), 0)
-        self.assertEqual(int(ExitCode.INPUT_ERROR), 1)
-        self.assertEqual(int(ExitCode.STAGE_ERROR), 2)
-        self.assertEqual(int(ExitCode.PUBLISH_ERROR), 3)
-        self.assertEqual(int(ExitCode.PUBLISH_UNCONFIRMED), 4)
+        expected = {
+            ExitCode.SUCCESS: 0,
+            ExitCode.INPUT_ERROR: 1,
+            ExitCode.STAGE_ERROR: 2,
+            ExitCode.PUBLISH_ERROR: 3,
+            ExitCode.PUBLISH_UNCONFIRMED: 4,
+        }
+
+        for code, value in expected.items():
+            with self.subTest(code=code):
+                self.assertEqual(int(code), value)
 
 
 class TestDataModels(unittest.TestCase):
@@ -85,6 +91,80 @@ class TestDataModels(unittest.TestCase):
         for model_class in model_classes:
             with self.subTest(model=model_class.__name__):
                 self.assertTrue(is_dataclass(model_class))
+
+    def test_model_field_names(self):
+        expected_fields = {
+            SourceRecord: (
+                "url", "kind", "order", "name",
+            ),
+            DownloadResult: (
+                "source", "success", "content", "status_code",
+                "error", "bytes_received", "truncated",
+            ),
+            IndexParseResult: (
+                "index_source", "sources", "invalid_count", "messages",
+            ),
+            Candidate: (
+                "url", "name", "source_kind", "source_order",
+                "item_order", "tvg_id", "tvg_name",
+                "group_title", "source_url",
+            ),
+            NetworkResult: (
+                "success", "requested_url", "content", "final_url",
+                "remote_ip", "status_code", "content_type",
+                "bytes_received", "redirects", "error",
+            ),
+            ValidationResult: (
+                "candidate", "passed", "stream_type",
+                "completed", "reason",
+            ),
+            FilterResult: (
+                "m3u_content", "channel_count",
+            ),
+            PublishResult: (
+                "success", "exit_code", "target_path",
+                "git_pushed", "remote_verified", "error",
+            ),
+            StageResult: (
+                "stage_name", "elapsed_seconds", "success",
+                "incomplete", "message",
+            ),
+            RunSummary: (
+                "mode", "exit_code", "stage_results",
+                "sources_attempted", "candidates_collected",
+                "candidates_validated", "candidates_passed",
+                "candidates_incomplete", "channels_published",
+                "incomplete", "messages",
+            ),
+        }
+
+        for model_class, expected in expected_fields.items():
+            actual = tuple(
+                field.name for field in fields(model_class)
+            )
+
+            with self.subTest(model=model_class.__name__):
+                self.assertEqual(actual, expected)
+
+    def test_all_models_are_frozen_dataclasses(self):
+        model_classes = (
+            SourceRecord,
+            DownloadResult,
+            IndexParseResult,
+            Candidate,
+            NetworkResult,
+            ValidationResult,
+            FilterResult,
+            PublishResult,
+            StageResult,
+            RunSummary,
+        )
+
+        for model_class in model_classes:
+            with self.subTest(model=model_class.__name__):
+                self.assertTrue(
+                    model_class.__dataclass_params__.frozen
+                )
 
     def test_source_record_defaults(self):
         self.assertIsNone(self.source.name)
@@ -202,12 +282,62 @@ class TestDataModels(unittest.TestCase):
         self.assertFalse(result.incomplete)
         self.assertEqual(result.messages, ())
 
-    def test_models_are_immutable(self):
-        with self.assertRaises(FrozenInstanceError):
-            self.source.url = "https://example.com/changed.ts"
+    def test_all_model_instances_are_immutable(self):
+        download = DownloadResult(
+            source=self.source,
+            success=True,
+        )
+        index_result = IndexParseResult(index_source=self.source)
+        network = NetworkResult(
+            success=True,
+            requested_url="https://example.com/",
+        )
+        validation = ValidationResult(
+            candidate=self.candidate,
+            passed=True,
+        )
+        filtered = FilterResult(
+            m3u_content="#EXTM3U\n",
+            channel_count=0,
+        )
+        published = PublishResult(
+            success=True,
+            exit_code=ExitCode.SUCCESS,
+            target_path="output/iptv.m3u",
+        )
+        stage = StageResult(
+            stage_name="collection",
+            elapsed_seconds=1.0,
+            success=True,
+        )
+        summary = RunSummary(
+            mode=RunMode.TEST,
+            exit_code=ExitCode.SUCCESS,
+        )
 
-        with self.assertRaises(FrozenInstanceError):
-            self.candidate.name = "Changed Name"
+        instances = (
+            self.source,
+            download,
+            index_result,
+            self.candidate,
+            network,
+            validation,
+            filtered,
+            published,
+            stage,
+            summary,
+        )
+
+        for instance in instances:
+            first_field = fields(instance)[0]
+
+            with self.subTest(model=type(instance).__name__):
+                with self.assertRaises(FrozenInstanceError):
+                    setattr(
+                        instance,
+                        first_field.name,
+                        getattr(instance, first_field.name),
+                    )
 
 
 if __name__ == "__main__":
