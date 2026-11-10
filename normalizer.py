@@ -1,11 +1,7 @@
 
 """Normalize subscription data and allocate candidate limits.
 
-This module parses downloaded M3U subscriptions, normalizes candidate
-URLs, removes duplicates, and allocates candidate limits in stable
-source-priority order.
-
-All shared data structures come from models.py.
+Supports standard M3U and channel TXT subscriptions.
 URL normalization is delegated to sources.py.
 This module performs no network requests.
 """
@@ -25,27 +21,25 @@ from models import Candidate, DownloadResult, SourceKind
 
 logger = logging.getLogger(__name__)
 
-
 _ATTRIBUTE_PATTERN = re.compile(
     r"""([A-Za-z0-9_-]+)\s*=\s*
     (?:"([^"]*)"|'([^']*)'|([^\s]+))""",
     re.VERBOSE,
 )
 
+_M3U_MARKERS = (b"#EXTM3U", b"#EXTINF:", b"#EXTGRP:")
+
 
 def _check_budget(deadline: float) -> None:
-    """Stop normalization immediately when its stage budget expires."""
     if time.monotonic() >= deadline:
         raise TimeoutError("Normalization stage budget exhausted.")
 
 
 def _log_invalid(message: str, *args: object) -> None:
-    """Log an invalid subscription record without stopping the run."""
     logger.warning(message, *args)
 
 
 def _split_extinf(line: str) -> Optional[Tuple[str, str]]:
-    """Split an EXTINF line at the first comma outside quoted values."""
     if not line.startswith("#EXTINF:"):
         return None
 
@@ -67,7 +61,6 @@ def _split_extinf(line: str) -> Optional[Tuple[str, str]]:
 
 
 def _parse_extinf_attributes(value: str) -> dict[str, str]:
-    """Read supported EXTINF attributes and ignore unknown attributes."""
     attributes: dict[str, str] = {}
 
     for match in _ATTRIBUTE_PATTERN.finditer(value):
@@ -86,40 +79,52 @@ def _parse_extinf_attributes(value: str) -> dict[str, str]:
     return attributes
 
 
-def _parse_subscription(
+def _is_m3u(content: bytes) -> bool:
+    return any(marker in content for marker in _M3U_MARKERS)
+
+
+def _decode_txt(content: bytes) -> Optional[str]:
+    """Decode TXT strictly: UTF-8-SIG first, then GB18030."""
+    try:
+        decoded = content.decode("utf-8-sig", errors="strict")
+        logger.info("Channel TXT decoded using UTF-8-SIG")
+        return decoded
+    except UnicodeDecodeError:
+        pass
+
+    try:
+        decoded = content.decode("gb18030", errors="strict")
+        logger.info("Channel TXT decoded using GB18030")
+        return decoded
+    except UnicodeDecodeError as exc:
+        _log_invalid("Channel TXT decoding failed: %s", exc)
+        return None
+
+
+def _looks_like_txt(content: str) -> bool:
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+
+        if not line or line.startswith("//"):
+            continue
+
+        if line.endswith(",#genre#") or line.endswith(",#group#"):
+            return True
+
+        if "," in line:
+            _, value = line.split(",", 1)
+            if value.strip().lower().startswith(("http://", "https://")):
+                return True
+
+    return False
+
+
+def _parse_m3u_subscription(
     result: DownloadResult,
     deadline: float,
 ) -> Tuple[Candidate, ...]:
-    """Parse one complete downloaded M3U subscription."""
+    """Parse M3U using the original UTF-8-only line behavior."""
     source = result.source
-
-    if source.kind not in (
-        SourceKind.MANUAL_SUBSCRIPTION,
-        SourceKind.AUTO_SUBSCRIPTION,
-    ):
-        return ()
-
-    if not result.success:
-        _log_invalid(
-            "Skipping unsuccessful subscription download: %s",
-            source.url,
-        )
-        return ()
-
-    if result.truncated:
-        _log_invalid(
-            "Skipping incomplete subscription download: %s",
-            source.url,
-        )
-        return ()
-
-    if not isinstance(result.content, bytes):
-        _log_invalid(
-            "Skipping subscription with invalid content type: %s",
-            source.url,
-        )
-        return ()
-
     candidates: List[Candidate] = []
     pending: Optional[Tuple[dict[str, str], str, int]] = None
     current_group = ""
@@ -243,20 +248,70 @@ def _parse_subscription(
     return tuple(candidates)
 
 
-def _manual_stream_candidates(
-    urls: Sequence[str],
+def _parse_txt_subscription(
+    result: DownloadResult,
     deadline: float,
 ) -> Tuple[Candidate, ...]:
-    """Convert configured manual stream URLs into candidates."""
+    """Parse channel TXT records and inherit the current genre."""
+    source = result.source
+    decoded = _decode_txt(result.content)
+
+    if decoded is None:
+        _log_invalid("Skipping undecodable channel TXT: %s", source.url)
+        return ()
+
+    if not _looks_like_txt(decoded):
+        _log_invalid("Unrecognized subscription format: %s", source.url)
+        return ()
+
     candidates: List[Candidate] = []
+    current_group = ""
+    item_order = 0
 
-    for index, raw_url in enumerate(urls):
+    for line_number, raw_line in enumerate(decoded.splitlines(), start=1):
         _check_budget(deadline)
+        line = raw_line.strip()
 
-        if not isinstance(raw_url, str):
+        if not line:
+            continue
+
+        if line.startswith("//"):
+            continue
+
+        if line.endswith(",#group#"):
+            continue
+
+        if line.endswith(",#genre#"):
+            group_name = line[:-len(",#genre#")].strip()
+            if group_name:
+                current_group = group_name
+            else:
+                _log_invalid(
+                    "Empty TXT genre in %s at line %d",
+                    source.url,
+                    line_number,
+                )
+            continue
+
+        item_order += 1
+
+        if "," not in line:
             _log_invalid(
-                "Ignoring manual stream URL with invalid type at index %d",
-                index,
+                "Invalid TXT record in %s at line %d",
+                source.url,
+                line_number,
+            )
+            continue
+
+        channel_name, raw_url = line.split(",", 1)
+        channel_name = channel_name.strip()
+        raw_url = raw_url.strip()
+
+        if not channel_name or not raw_url:
+            _log_invalid(
+                "Empty TXT channel name or URL in %s at line %d",
+                source.url,
+                line_number,
             )
             continue
 
@@ -264,153 +319,55 @@ def _manual_stream_candidates(
             normalized_url = sources.normalize_source_url(raw_url)
         except (TypeError, ValueError) as exc:
             _log_invalid(
-                "Ignoring invalid manual stream URL at index %d: %s",
-                index,
+                "Invalid TXT stream URL in %s at line %d: %s",
+                source.url,
+                line_number,
                 exc,
             )
             continue
-
-        try:
-            hostname = urlsplit(normalized_url).hostname
-        except ValueError:
-            hostname = None
-
-        channel_name = hostname or normalized_url
 
         candidates.append(
             Candidate(
                 url=normalized_url,
                 name=channel_name,
-                source_kind=SourceKind.MANUAL_STREAM,
-                source_order=index,
-                item_order=index,
+                source_kind=source.kind,
+                source_order=source.order,
+                item_order=item_order,
                 tvg_id=None,
                 tvg_name=None,
-                group_title=None,
-                source_url=None,
+                group_title=current_group or None,
+                source_url=source.url,
             )
         )
 
+    _check_budget(deadline)
     return tuple(candidates)
 
 
-def normalize_candidates(
-    download_results: Sequence[DownloadResult],
-    *,
-    manual_stream_urls: Optional[Sequence[str]] = None,
+def _parse_subscription(
+    result: DownloadResult,
+    deadline: float,
 ) -> Tuple[Candidate, ...]:
-    """Parse, normalize, deduplicate, and allocate candidate limits.
+    source = result.source
 
-    Candidate order is always:
-    1. Manual single-stream URLs in configuration order.
-    2. Manual subscription sources in source order.
-    3. Automatic subscription sources in source order.
-
-    Duplicate URLs do not consume candidate limits.
-    Subscription sources are limited to MAX_CANDIDATES_PER_SOURCE.
-    All retained candidates share MAX_CANDIDATES_TOTAL.
-
-    The complete normalization operation shares one stage deadline.
-    """
-    if (
-        not isinstance(download_results, Sequence)
-        or isinstance(download_results, (str, bytes, bytearray))
+    if source.kind not in (
+        SourceKind.MANUAL_SUBSCRIPTION,
+        SourceKind.AUTO_SUBSCRIPTION,
     ):
-        raise TypeError("download_results must be a sequence")
+        return ()
 
-    for result in download_results:
-        if not isinstance(result, DownloadResult):
-            raise TypeError(
-                "Every download result must be a DownloadResult"
-            )
+    if not result.success:
+        _log_invalid(
+            "Skipping unsuccessful subscription download: %s",
+            source.url,
+        )
+        return ()
 
-    if manual_stream_urls is None:
-        manual_stream_urls = config.MANUAL_STREAM_URLS
+    if result.truncated:
+        _log_invalid(
+            "Skipping incomplete subscription download: %s",
+            source.url,
+        )
+        return ()
 
-    if (
-        not isinstance(manual_stream_urls, Sequence)
-        or isinstance(manual_stream_urls, (str, bytes, bytearray))
-    ):
-        raise TypeError("manual_stream_urls must be a sequence of URLs")
-
-    if config.MAX_CANDIDATES_PER_SOURCE <= 0:
-        raise ValueError("MAX_CANDIDATES_PER_SOURCE must be positive")
-
-    if config.MAX_CANDIDATES_TOTAL <= 0:
-        raise ValueError("MAX_CANDIDATES_TOTAL must be positive")
-
-    if config.NORMALIZATION_BUDGET_SECONDS <= 0:
-        raise ValueError("NORMALIZATION_BUDGET_SECONDS must be positive")
-
-    deadline = (
-        time.monotonic() + config.NORMALIZATION_BUDGET_SECONDS
-    )
-
-    _check_budget(deadline)
-
-    ordered_results = sorted(
-        enumerate(download_results),
-        key=lambda item: (
-            0
-            if item[1].source.kind == SourceKind.MANUAL_SUBSCRIPTION
-            else 1
-            if item[1].source.kind == SourceKind.AUTO_SUBSCRIPTION
-            else 2,
-            item[1].source.order,
-            item[0],
-        ),
-    )
-
-    _check_budget(deadline)
-
-    retained: List[Candidate] = []
-    seen_urls: Set[str] = set()
-    source_counts: dict[Tuple[SourceKind, int, str], int] = {}
-
-    # Manual single-stream URLs have the highest priority.
-    for candidate in _manual_stream_candidates(
-        manual_stream_urls,
-        deadline,
-    ):
-        _check_budget(deadline)
-
-        if candidate.url in seen_urls:
-            continue
-
-        if len(retained) >= config.MAX_CANDIDATES_TOTAL:
-            return tuple(retained)
-
-        seen_urls.add(candidate.url)
-        retained.append(candidate)
-
-    # Subscription candidates are processed in stable source order.
-    for _, result in ordered_results:
-        _check_budget(deadline)
-
-        for candidate in _parse_subscription(result, deadline):
-            _check_budget(deadline)
-
-            if candidate.url in seen_urls:
-                continue
-
-            if len(retained) >= config.MAX_CANDIDATES_TOTAL:
-                return tuple(retained)
-
-            source_key = (
-                candidate.source_kind,
-                candidate.source_order,
-                candidate.source_url or "",
-            )
-
-            current_count = source_counts.get(source_key, 0)
-
-            if current_count >= config.MAX_CANDIDATES_PER_SOURCE:
-                continue
-
-            seen_urls.add(candidate.url)
-            retained.append(candidate)
-            source_counts[source_key] = current_count + 1
-
-    _check_budget(deadline)
-
-    return tuple(retained)
+    if not isinstance(result.content, bytes)
