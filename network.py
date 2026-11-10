@@ -261,11 +261,9 @@ async def _read_limited(
 ) -> tuple[bytes, bool, int]:
     """Read at most max_bytes and preserve bytes on interrupted reads.
 
-    If Content-Length is known and exactly matches the bytes consumed,
-    the response is complete even if aiohttp has not yet set at_eof().
-    If Content-Length is unknown and the limit is reached, completeness
-    cannot be proven without reading an extra byte, so it is conservative
-    and reported as exceeded/incomplete.
+    A known Content-Length equal to the bytes consumed is complete.
+    With unknown Content-Length, at_eof() determines whether the body
+    has ended when the read limit is reached. No extra byte is read.
     """
     chunks: list[bytes] = []
     received = 0
@@ -295,11 +293,11 @@ async def _read_limited(
     content_length = response.content_length
 
     if content_length is None:
-        exceeded = True
+        # Unknown-length response: only mark incomplete if EOF
+        # has not been confirmed. Do not read an additional byte.
+        exceeded = not response.content.at_eof()
     else:
-        # Equal means the declared complete body has been consumed.
-        # Both a shorter and a longer declared body are incomplete or
-        # inconsistent once the actual read limit has been reached.
+        # A declared length equal to the consumed bytes is complete.
         exceeded = content_length != received
 
     return content, exceeded, received
