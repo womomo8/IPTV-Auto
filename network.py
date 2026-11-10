@@ -18,6 +18,20 @@ from models import NetworkResult
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
 
+class _ResponseReadError(Exception):
+    """Preserve response bytes already consumed before a read failure."""
+
+    def __init__(
+        self,
+        cause: Exception,
+        content: bytes,
+    ) -> None:
+        super().__init__(type(cause).__name__)
+        self.content = content
+        self.bytes_received = len(content)
+        self.cause_name = type(cause).__name__
+
+
 class _PinnedIPv4Resolver(aiohttp.abc.AbstractResolver):
     """Return only IPv4 addresses already checked by this module."""
 
@@ -245,15 +259,31 @@ async def _read_limited(
     response: aiohttp.ClientResponse,
     max_bytes: int,
 ) -> tuple[bytes, bool, int]:
-    """Read no more than max_bytes and report the actual bytes consumed."""
+    """Read at most max_bytes and preserve bytes on interrupted reads.
+
+    If Content-Length is known and exactly matches the bytes consumed,
+    the response is complete even if aiohttp has not yet set at_eof().
+    If Content-Length is unknown and the limit is reached, completeness
+    cannot be proven without reading an extra byte, so it is conservative
+    and reported as exceeded/incomplete.
+    """
     chunks: list[bytes] = []
     received = 0
 
     while received < max_bytes:
         remaining = max_bytes - received
-        chunk = await response.content.read(
-            min(16 * 1024, remaining)
-        )
+
+        try:
+            chunk = await response.content.read(
+                min(16 * 1024, remaining)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise _ResponseReadError(
+                exc,
+                b"".join(chunks),
+            ) from exc
 
         if not chunk:
             return b"".join(chunks), False, received
@@ -261,15 +291,18 @@ async def _read_limited(
         chunks.append(chunk)
         received += len(chunk)
 
-    # Do not read an extra byte just to test whether the response
-    # exceeds the limit. Use response metadata and stream state instead.
+    content = b"".join(chunks)
     content_length = response.content_length
-    exceeded = (
-        content_length is not None
-        and content_length > received
-    ) or not response.content.at_eof()
 
-    return b"".join(chunks), exceeded, received
+    if content_length is None:
+        exceeded = True
+    else:
+        # Equal means the declared complete body has been consumed.
+        # Both a shorter and a longer declared body are incomplete or
+        # inconsistent once the actual read limit has been reached.
+        exceeded = content_length != received
+
+    return content, exceeded, received
 
 
 async def _request_once(
@@ -357,10 +390,25 @@ async def _request_once(
                         current_url = next_normalized
                         continue
 
-                    content, exceeded, bytes_received = await _read_limited(
-                        response,
-                        max_bytes,
-                    )
+                    try:
+                        content, exceeded, bytes_received = (
+                            await _read_limited(response, max_bytes)
+                        )
+                    except _ResponseReadError as exc:
+                        return _failure(
+                            requested_url,
+                            (
+                                "Response read interrupted: "
+                                f"{exc.cause_name}."
+                            ),
+                            content=exc.content,
+                            bytes_received=exc.bytes_received,
+                            status_code=response.status,
+                            final_url=normalized,
+                            remote_ip=remote_ip,
+                            content_type=response.headers.get("Content-Type"),
+                            redirects=tuple(redirects),
+                        )
 
                     if exceeded:
                         return _failure(
