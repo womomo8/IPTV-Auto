@@ -299,16 +299,6 @@ def normalize_candidates(
 
     Download results are sorted before parsing, so their completion
     order cannot affect candidate allocation.
-
-    Args:
-        download_results:
-            Results returned by collector.collect_sources().
-        manual_stream_urls:
-            Optional manual stream URL sequence. If omitted,
-            config.MANUAL_STREAM_URLS is used.
-
-    Returns:
-        A tuple of candidates ready for validator.py.
     """
     if (
         not isinstance(download_results, Sequence)
@@ -344,4 +334,49 @@ def normalize_candidates(
             if item[1].source.kind == SourceKind.MANUAL_SUBSCRIPTION
             else 1
             if item[1].source.kind == SourceKind.AUTO_SUBSCRIPTION
-      
+            else 2,
+            item[1].source.order,
+            item[0],
+        ),
+    )
+
+    retained: List[Candidate] = []
+    seen_urls: Set[str] = set()
+    source_counts: dict[Tuple[SourceKind, int, str], int] = {}
+
+    # Manual single-stream URLs have the highest priority.
+    for candidate in _manual_stream_candidates(manual_stream_urls):
+        if candidate.url in seen_urls:
+            continue
+
+        if len(retained) >= config.MAX_CANDIDATES_TOTAL:
+            return tuple(retained)
+
+        seen_urls.add(candidate.url)
+        retained.append(candidate)
+
+    # Subscription candidates are processed in stable source order.
+    for _, result in ordered_results:
+        for candidate in _parse_subscription(result):
+            if candidate.url in seen_urls:
+                continue
+
+            if len(retained) >= config.MAX_CANDIDATES_TOTAL:
+                return tuple(retained)
+
+            source_key = (
+                candidate.source_kind,
+                candidate.source_order,
+                candidate.source_url or "",
+            )
+
+            current_count = source_counts.get(source_key, 0)
+
+            if current_count >= config.MAX_CANDIDATES_PER_SOURCE:
+                continue
+
+            seen_urls.add(candidate.url)
+            retained.append(candidate)
+            source_counts[source_key] = current_count + 1
+
+    return tuple(retained)
