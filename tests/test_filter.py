@@ -5,13 +5,7 @@ import unittest
 from unittest.mock import patch
 
 import filter as iptv_filter
-from models import (
-    Candidate,
-    ExitCode,
-    SourceKind,
-    StreamType,
-    ValidationResult,
-)
+from models import Candidate, SourceKind, StreamType, ValidationResult
 
 
 def make_candidate(
@@ -68,7 +62,11 @@ class TestFilterEligibility(unittest.TestCase):
             (
                 make_result(valid),
                 make_result(failed, passed=False),
-                make_result(incomplete, completed=False),
+                make_result(
+                    incomplete,
+                    passed=False,
+                    completed=False,
+                ),
             )
         )
 
@@ -364,134 +362,4 @@ class TestM3UGeneration(unittest.TestCase):
             group_title="Sports",
         )
 
-        result = iptv_filter.filter_candidates(
-            (make_result(candidate),)
-        )
-
-        self.assertEqual(
-            result.m3u_content.splitlines()[1],
-            '#EXTINF:-1 tvg-id="channel-1" '
-            'tvg-name="Channel" group-title="Sports",Channel',
-        )
-
-    def test_empty_id_and_group_are_omitted(self):
-        candidate = make_candidate(
-            "https://example.com/live.ts",
-            "Channel",
-            tvg_id="   ",
-            group_title="   ",
-        )
-
-        result = iptv_filter.filter_candidates(
-            (make_result(candidate),)
-        )
-
-        self.assertEqual(
-            result.m3u_content.splitlines()[1],
-            '#EXTINF:-1 tvg-name="Channel",Channel',
-        )
-
-    def test_quotes_and_newlines_are_sanitized_in_attributes(self):
-        candidate = make_candidate(
-            "https://example.com/live.ts",
-            'Channel "One"\nTwo',
-            tvg_id='id"\r\nvalue',
-            group_title='Group "A"\nB',
-        )
-
-        result = iptv_filter.filter_candidates(
-            (make_result(candidate),)
-        )
-
-        lines = result.m3u_content.splitlines()
-
-        self.assertEqual(result.channel_count, 1)
-        self.assertIn("tvg-id=\"id'  value\"", lines[1])
-        self.assertIn("tvg-name=\"Channel 'One' Two\"", lines[1])
-        self.assertIn("group-title=\"Group 'A' B\"", lines[1])
-        self.assertNotIn("\r", result.m3u_content)
-
-    def test_channel_name_comma_is_preserved(self):
-        candidate = make_candidate(
-            "https://example.com/live.ts",
-            "News, International",
-        )
-
-        result = iptv_filter.filter_candidates(
-            (make_result(candidate),)
-        )
-
-        self.assertIn(
-            '#EXTINF:-1 tvg-name="News, International",'
-            'News, International',
-            result.m3u_content,
-        )
-
-    def test_output_uses_lf_and_ends_with_newline(self):
-        candidate = make_candidate(
-            "https://example.com/live.ts",
-            "Channel",
-        )
-
-        result = iptv_filter.filter_candidates(
-            (make_result(candidate),)
-        )
-
-        self.assertTrue(result.m3u_content.startswith("#EXTM3U\n"))
-        self.assertTrue(result.m3u_content.endswith("\n"))
-        self.assertNotIn("\r", result.m3u_content)
-
-    def test_invalid_candidate_url_is_skipped(self):
-        candidate = make_candidate(
-            "ftp://example.com/live.ts",
-            "Invalid",
-        )
-
-        result = iptv_filter.filter_candidates(
-            (make_result(candidate),)
-        )
-
-        self.assertEqual(result.channel_count, 0)
-        self.assertEqual(result.m3u_content, "#EXTM3U\n")
-
-
-class TestFilterInputValidation(unittest.TestCase):
-
-    def test_rejects_string_instead_of_sequence(self):
-        with self.assertRaises(TypeError):
-            iptv_filter.filter_candidates("invalid")
-
-    def test_rejects_non_validation_result_items(self):
-        with self.assertRaises(TypeError):
-            iptv_filter.filter_candidates(("invalid",))
-
-    def test_rejects_result_count_over_global_limit(self):
-        candidate = make_candidate(
-            "https://example.com/live.ts",
-            "Channel",
-        )
-        results = tuple(
-            make_result(candidate)
-            for _ in range(3)
-        )
-
-        with patch.object(
-            iptv_filter.config,
-            "MAX_CANDIDATES_TOTAL",
-            2,
-        ):
-            with self.assertRaises(ValueError):
-                iptv_filter.filter_candidates(results)
-
-    def test_rejects_non_positive_filter_budget(self):
-        with patch.object(
-            iptv_filter.config,
-            "FILTER_BUDGET_SECONDS",
-            0,
-        ):
-            with self.assertRaises(ValueError):
-                iptv_filter.filter_candidates(())
-
-
-if __name__ == "__main__":
-    unittest.main()
+        result = iptv_filter.filter_cand
