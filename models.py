@@ -122,6 +122,12 @@ class ValidationResult:
     completed: bool = True
     reason: Optional[str] = None
 
+    def __post_init__(self) -> None:
+        if not self.completed and self.passed:
+            raise ValueError(
+                "An incomplete validation result cannot be passed."
+            )
+
 
 @dataclass(frozen=True)
 class FilterResult:
