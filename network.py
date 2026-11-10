@@ -54,12 +54,16 @@ def _failure(
     message: str,
     *,
     content: bytes = b"",
+    bytes_received: Optional[int] = None,
     status_code: Optional[int] = None,
     final_url: Optional[str] = None,
     remote_ip: Optional[str] = None,
     content_type: Optional[str] = None,
     redirects: tuple[str, ...] = (),
 ) -> NetworkResult:
+    if bytes_received is None:
+        bytes_received = len(content)
+
     return NetworkResult(
         success=False,
         requested_url=url,
@@ -68,7 +72,7 @@ def _failure(
         remote_ip=remote_ip,
         status_code=status_code,
         content_type=content_type,
-        bytes_received=len(content),
+        bytes_received=bytes_received,
         redirects=redirects,
         error=message,
     )
@@ -240,26 +244,32 @@ def _actual_remote_ip(response: aiohttp.ClientResponse) -> str:
 async def _read_limited(
     response: aiohttp.ClientResponse,
     max_bytes: int,
-) -> tuple[bytes, bool]:
+) -> tuple[bytes, bool, int]:
+    """Read no more than max_bytes and report the actual bytes consumed."""
     chunks: list[bytes] = []
     received = 0
 
-    async for chunk in response.content.iter_chunked(16 * 1024):
+    while received < max_bytes:
         remaining = max_bytes - received
+        chunk = await response.content.read(
+            min(16 * 1024, remaining)
+        )
 
-        if len(chunk) > remaining:
-            if remaining > 0:
-                chunks.append(chunk[:remaining])
-            return b"".join(chunks), True
+        if not chunk:
+            return b"".join(chunks), False, received
 
         chunks.append(chunk)
         received += len(chunk)
 
-        if received == max_bytes:
-            extra = await response.content.read(1)
-            return b"".join(chunks), bool(extra)
+    # Do not read an extra byte just to test whether the response
+    # exceeds the limit. Use response metadata and stream state instead.
+    content_length = response.content_length
+    exceeded = (
+        content_length is not None
+        and content_length > received
+    ) or not response.content.at_eof()
 
-    return b"".join(chunks), False
+    return b"".join(chunks), exceeded, received
 
 
 async def _request_once(
@@ -347,7 +357,7 @@ async def _request_once(
                         current_url = next_normalized
                         continue
 
-                    content, exceeded = await _read_limited(
+                    content, exceeded, bytes_received = await _read_limited(
                         response,
                         max_bytes,
                     )
@@ -357,6 +367,7 @@ async def _request_once(
                             requested_url,
                             "Response exceeded read limit.",
                             content=content,
+                            bytes_received=bytes_received,
                             status_code=response.status,
                             final_url=normalized,
                             remote_ip=remote_ip,
@@ -372,7 +383,7 @@ async def _request_once(
                         remote_ip=remote_ip,
                         status_code=response.status,
                         content_type=response.headers.get("Content-Type"),
-                        bytes_received=len(content),
+                        bytes_received=bytes_received,
                         redirects=tuple(redirects),
                         error=None,
                     )
