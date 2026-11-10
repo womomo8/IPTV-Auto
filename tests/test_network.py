@@ -1,3 +1,4 @@
+
 """Tests for the shared IPv4-only network layer."""
 
 import asyncio
@@ -69,27 +70,27 @@ class TestResolvePublicIPv4(unittest.IsolatedAsyncioTestCase):
             getaddrinfo=AsyncMock(return_value=records)
         )
 
-        with (
-            patch("network.asyncio.get_running_loop",
-                  return_value=fake_loop),
-            patch("network.asyncio.wait_for",
-                  new_callable=AsyncMock, return_value=records),
+        with patch(
+            "network.asyncio.get_running_loop",
+            return_value=fake_loop,
         ):
             with self.assertRaises(ValueError):
                 await network._resolve_public_ipv4("example.com", 80)
+
+        fake_loop.getaddrinfo.assert_awaited_once()
 
     async def test_rejects_empty_dns_result(self):
         fake_loop = SimpleNamespace(
             getaddrinfo=AsyncMock(return_value=[])
         )
-        with (
-            patch("network.asyncio.get_running_loop",
-                  return_value=fake_loop),
-            patch("network.asyncio.wait_for",
-                  new_callable=AsyncMock, return_value=[]),
+        with patch(
+            "network.asyncio.get_running_loop",
+            return_value=fake_loop,
         ):
             with self.assertRaises(OSError):
                 await network._resolve_public_ipv4("example.com", 80)
+
+        fake_loop.getaddrinfo.assert_awaited_once()
 
 
 class TestPinnedResolver(unittest.IsolatedAsyncioTestCase):
