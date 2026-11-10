@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import List, Optional, Sequence, Set, Tuple
 from urllib.parse import urlsplit
 
@@ -30,6 +31,12 @@ _ATTRIBUTE_PATTERN = re.compile(
     (?:"([^"]*)"|'([^']*)'|([^\s]+))""",
     re.VERBOSE,
 )
+
+
+def _check_budget(deadline: float) -> None:
+    """Stop normalization immediately when its stage budget expires."""
+    if time.monotonic() >= deadline:
+        raise TimeoutError("Normalization stage budget exhausted.")
 
 
 def _log_invalid(message: str, *args: object) -> None:
@@ -81,6 +88,7 @@ def _parse_extinf_attributes(value: str) -> dict[str, str]:
 
 def _parse_subscription(
     result: DownloadResult,
+    deadline: float,
 ) -> Tuple[Candidate, ...]:
     """Parse one complete downloaded M3U subscription."""
     source = result.source
@@ -121,6 +129,8 @@ def _parse_subscription(
         result.content.splitlines(),
         start=1,
     ):
+        _check_budget(deadline)
+
         try:
             line = raw_line.decode("utf-8").strip()
         except UnicodeDecodeError:
@@ -179,8 +189,6 @@ def _parse_subscription(
             pending = (attributes, channel_name, item_order)
             continue
 
-        # Other comments and directives are ignored. The next non-empty,
-        # non-comment line after EXTINF remains the expected stream URL.
         if line.startswith("#"):
             continue
 
@@ -224,6 +232,8 @@ def _parse_subscription(
             )
         )
 
+    _check_budget(deadline)
+
     if pending is not None:
         _log_invalid(
             "Final EXTINF record has no URL in %s",
@@ -235,11 +245,14 @@ def _parse_subscription(
 
 def _manual_stream_candidates(
     urls: Sequence[str],
+    deadline: float,
 ) -> Tuple[Candidate, ...]:
     """Convert configured manual stream URLs into candidates."""
     candidates: List[Candidate] = []
 
     for index, raw_url in enumerate(urls):
+        _check_budget(deadline)
+
         if not isinstance(raw_url, str):
             _log_invalid(
                 "Ignoring manual stream URL with invalid type at index %d",
@@ -297,8 +310,7 @@ def normalize_candidates(
     Subscription sources are limited to MAX_CANDIDATES_PER_SOURCE.
     All retained candidates share MAX_CANDIDATES_TOTAL.
 
-    Download results are sorted before parsing, so their completion
-    order cannot affect candidate allocation.
+    The complete normalization operation shares one stage deadline.
     """
     if (
         not isinstance(download_results, Sequence)
@@ -327,6 +339,15 @@ def normalize_candidates(
     if config.MAX_CANDIDATES_TOTAL <= 0:
         raise ValueError("MAX_CANDIDATES_TOTAL must be positive")
 
+    if config.NORMALIZATION_BUDGET_SECONDS <= 0:
+        raise ValueError("NORMALIZATION_BUDGET_SECONDS must be positive")
+
+    deadline = (
+        time.monotonic() + config.NORMALIZATION_BUDGET_SECONDS
+    )
+
+    _check_budget(deadline)
+
     ordered_results = sorted(
         enumerate(download_results),
         key=lambda item: (
@@ -340,12 +361,19 @@ def normalize_candidates(
         ),
     )
 
+    _check_budget(deadline)
+
     retained: List[Candidate] = []
     seen_urls: Set[str] = set()
     source_counts: dict[Tuple[SourceKind, int, str], int] = {}
 
     # Manual single-stream URLs have the highest priority.
-    for candidate in _manual_stream_candidates(manual_stream_urls):
+    for candidate in _manual_stream_candidates(
+        manual_stream_urls,
+        deadline,
+    ):
+        _check_budget(deadline)
+
         if candidate.url in seen_urls:
             continue
 
@@ -357,7 +385,11 @@ def normalize_candidates(
 
     # Subscription candidates are processed in stable source order.
     for _, result in ordered_results:
-        for candidate in _parse_subscription(result):
+        _check_budget(deadline)
+
+        for candidate in _parse_subscription(result, deadline):
+            _check_budget(deadline)
+
             if candidate.url in seen_urls:
                 continue
 
@@ -378,5 +410,7 @@ def normalize_candidates(
             seen_urls.add(candidate.url)
             retained.append(candidate)
             source_counts[source_key] = current_count + 1
+
+    _check_budget(deadline)
 
     return tuple(retained)
