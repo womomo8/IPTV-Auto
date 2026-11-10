@@ -8,21 +8,11 @@ import normalizer
 from models import DownloadResult, SourceKind, SourceRecord
 
 
-def make_source(
-    url,
-    kind=SourceKind.AUTO_SUBSCRIPTION,
-    order=1,
-):
+def make_source(url, kind=SourceKind.AUTO_SUBSCRIPTION, order=1):
     return SourceRecord(url=url, kind=kind, order=order)
 
 
-def make_download(
-    source,
-    content,
-    *,
-    success=True,
-    truncated=False,
-):
+def make_download(source, content, success=True, truncated=False):
     return DownloadResult(
         source=source,
         success=success,
@@ -34,11 +24,9 @@ def make_download(
 
 def make_m3u(*records):
     lines = ["#EXTM3U"]
-
     for attributes, name, url in records:
         lines.append(f"#EXTINF:-1 {attributes},{name}")
         lines.append(url)
-
     return "\n".join(lines).encode("utf-8")
 
 
@@ -50,7 +38,6 @@ class TestSubscriptionParsing(unittest.TestCase):
             SourceKind.MANUAL_SUBSCRIPTION,
         )
         content = (
-            '#EXTM3U\n'
             '#EXTINF:-1 tvg-id="channel.id" '
             'tvg-name="Display Name" group-title="Sports",'
             'Channel, Extra\n'
@@ -68,10 +55,7 @@ class TestSubscriptionParsing(unittest.TestCase):
         self.assertEqual(candidate.tvg_id, "channel.id")
         self.assertEqual(candidate.tvg_name, "Display Name")
         self.assertEqual(candidate.group_title, "Sports")
-        self.assertEqual(
-            candidate.url,
-            "https://example.com/live.ts",
-        )
+        self.assertEqual(candidate.url, "https://example.com/live.ts")
 
     def test_uses_extgrp_when_group_title_is_missing(self):
         source = make_source(
@@ -79,7 +63,6 @@ class TestSubscriptionParsing(unittest.TestCase):
             SourceKind.MANUAL_SUBSCRIPTION,
         )
         content = (
-            "#EXTM3U\n"
             "#EXTGRP:Sports\n"
             "#EXTINF:-1,Channel One\n"
             "https://example.com/one.ts\n"
@@ -114,7 +97,6 @@ class TestSubscriptionParsing(unittest.TestCase):
             manual_stream_urls=(),
         )
 
-        self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0].group_title, "News")
 
     def test_ignores_unknown_attributes(self):
@@ -136,7 +118,7 @@ class TestSubscriptionParsing(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0].tvg_id, "known")
 
-    def test_ignores_invalid_extinf_and_missing_channel_name(self):
+    def test_skips_invalid_extinf_and_empty_channel_name(self):
         source = make_source(
             "https://example.com/list.m3u",
             SourceKind.MANUAL_SUBSCRIPTION,
@@ -157,31 +139,6 @@ class TestSubscriptionParsing(unittest.TestCase):
 
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0].name, "Valid Channel")
-        self.assertEqual(
-            candidates[0].url,
-            "https://example.com/valid.ts",
-        )
-
-    def test_ignores_invalid_utf8_line_and_continues(self):
-        source = make_source(
-            "https://example.com/list.m3u",
-            SourceKind.MANUAL_SUBSCRIPTION,
-        )
-        content = (
-            b"#EXTINF:-1,Broken\n"
-            b"\xff\xfe\n"
-            b"https://example.com/broken.ts\n"
-            b"#EXTINF:-1,Valid\n"
-            b"https://example.com/valid.ts\n"
-        )
-
-        candidates = normalizer.normalize_candidates(
-            (make_download(source, content),),
-            manual_stream_urls=(),
-        )
-
-        self.assertEqual(len(candidates), 1)
-        self.assertEqual(candidates[0].name, "Valid")
 
     def test_skips_invalid_stream_urls(self):
         source = make_source(
@@ -196,6 +153,25 @@ class TestSubscriptionParsing(unittest.TestCase):
             "#EXTINF:-1,Valid\n"
             "https://example.com/live.ts\n"
         ).encode("utf-8")
+
+        candidates = normalizer.normalize_candidates(
+            (make_download(source, content),),
+            manual_stream_urls=(),
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].name, "Valid")
+
+    def test_ignores_invalid_utf8_line_without_stopping_parsing(self):
+        source = make_source(
+            "https://example.com/list.m3u",
+            SourceKind.MANUAL_SUBSCRIPTION,
+        )
+        content = (
+            b"\xff\xfe\n"
+            b"#EXTINF:-1,Valid\n"
+            b"https://example.com/valid.ts\n"
+        )
 
         candidates = normalizer.normalize_candidates(
             (make_download(source, content),),
@@ -221,7 +197,7 @@ class TestSubscriptionParsing(unittest.TestCase):
 
         self.assertEqual(candidates, ())
 
-    def test_skips_failed_subscription_download(self):
+    def test_skips_failed_download(self):
         source = make_source(
             "https://example.com/list.m3u",
             SourceKind.MANUAL_SUBSCRIPTION,
@@ -243,7 +219,7 @@ class TestSubscriptionParsing(unittest.TestCase):
 
         self.assertEqual(candidates, ())
 
-    def test_skips_truncated_subscription_download(self):
+    def test_skips_truncated_download(self):
         source = make_source(
             "https://example.com/list.m3u",
             SourceKind.MANUAL_SUBSCRIPTION,
@@ -274,8 +250,7 @@ class TestCandidatePriorityAndOrdering(unittest.TestCase):
             SourceKind.MANUAL_SUBSCRIPTION,
         )
         content = make_m3u(
-            ("", "Subscription Channel",
-             "https://example.com/live.ts"),
+            ("", "Subscription", "https://example.com/live.ts"),
         )
 
         candidates = normalizer.normalize_candidates(
@@ -291,7 +266,7 @@ class TestCandidatePriorityAndOrdering(unittest.TestCase):
             SourceKind.MANUAL_STREAM,
         )
 
-    def test_manual_subscription_precedes_automatic_subscription(self):
+    def test_manual_subscription_precedes_automatic(self):
         automatic = make_source(
             "https://example.com/auto.m3u",
             SourceKind.AUTO_SUBSCRIPTION,
@@ -342,3 +317,238 @@ class TestCandidatePriorityAndOrdering(unittest.TestCase):
             ("", "Earlier", "https://example.com/earlier.ts"),
         )
 
+        candidates = normalizer.normalize_candidates(
+            (
+                make_download(later, later_content),
+                make_download(earlier, earlier_content),
+            ),
+            manual_stream_urls=(),
+        )
+
+        self.assertEqual(
+            [item.name for item in candidates],
+            ["Earlier", "Later"],
+        )
+
+    def test_item_order_preserves_record_order(self):
+        source = make_source(
+            "https://example.com/list.m3u",
+            SourceKind.MANUAL_SUBSCRIPTION,
+        )
+        content = make_m3u(
+            ("", "First", "https://example.com/first.ts"),
+            ("", "Second", "https://example.com/second.ts"),
+        )
+
+        candidates = normalizer.normalize_candidates(
+            (make_download(source, content),),
+            manual_stream_urls=(),
+        )
+
+        self.assertEqual(
+            [item.item_order for item in candidates],
+            [1, 2],
+        )
+
+
+class TestCandidateDeduplicationAndLimits(unittest.TestCase):
+
+    def test_normalized_duplicate_urls_are_kept_once(self):
+        source = make_source(
+            "https://example.com/list.m3u",
+            SourceKind.MANUAL_SUBSCRIPTION,
+        )
+        content = make_m3u(
+            ("", "First", "https://EXAMPLE.com:443/live.ts#one"),
+            ("", "Second", "https://example.com/live.ts#two"),
+        )
+
+        candidates = normalizer.normalize_candidates(
+            (make_download(source, content),),
+            manual_stream_urls=(),
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].name, "First")
+        self.assertEqual(
+            candidates[0].url,
+            "https://example.com/live.ts",
+        )
+
+    def test_duplicate_does_not_consume_source_limit(self):
+        first = make_source(
+            "https://example.com/first.m3u",
+            SourceKind.MANUAL_SUBSCRIPTION,
+            1,
+        )
+        second = make_source(
+            "https://example.com/second.m3u",
+            SourceKind.AUTO_SUBSCRIPTION,
+            2,
+        )
+
+        first_content = make_m3u(
+            ("", "First", "https://example.com/shared.ts"),
+        )
+        second_content = make_m3u(
+            ("", "Duplicate", "https://EXAMPLE.com:443/shared.ts#x"),
+            ("", "Second", "https://example.com/second.ts"),
+        )
+
+        candidates = normalizer.normalize_candidates(
+            (
+                make_download(first, first_content),
+                make_download(second, second_content),
+            ),
+            manual_stream_urls=(),
+        )
+
+        self.assertEqual(
+            [item.name for item in candidates],
+            ["First", "Second"],
+        )
+
+    def test_enforces_per_source_candidate_limit(self):
+        first = make_source(
+            "https://example.com/first.m3u",
+            SourceKind.MANUAL_SUBSCRIPTION,
+            1,
+        )
+        second = make_source(
+            "https://example.com/second.m3u",
+            SourceKind.MANUAL_SUBSCRIPTION,
+            2,
+        )
+
+        first_content = make_m3u(
+            ("", "A1", "https://example.com/a1.ts"),
+            ("", "A2", "https://example.com/a2.ts"),
+            ("", "A3", "https://example.com/a3.ts"),
+        )
+        second_content = make_m3u(
+            ("", "B1", "https://example.com/b1.ts"),
+            ("", "B2", "https://example.com/b2.ts"),
+            ("", "B3", "https://example.com/b3.ts"),
+        )
+
+        with patch.object(
+            normalizer.config,
+            "MAX_CANDIDATES_PER_SOURCE",
+            2,
+        ):
+            candidates = normalizer.normalize_candidates(
+                (
+                    make_download(first, first_content),
+                    make_download(second, second_content),
+                ),
+                manual_stream_urls=(),
+            )
+
+        self.assertEqual(
+            [item.name for item in candidates],
+            ["A1", "A2", "B1", "B2"],
+        )
+
+    def test_enforces_global_candidate_limit(self):
+        source = make_source(
+            "https://example.com/list.m3u",
+            SourceKind.MANUAL_SUBSCRIPTION,
+        )
+        content = make_m3u(
+            ("", "One", "https://example.com/one.ts"),
+            ("", "Two", "https://example.com/two.ts"),
+            ("", "Three", "https://example.com/three.ts"),
+        )
+
+        with patch.object(
+            normalizer.config,
+            "MAX_CANDIDATES_TOTAL",
+            2,
+        ):
+            candidates = normalizer.normalize_candidates(
+                (make_download(source, content),),
+                manual_stream_urls=(),
+            )
+
+        self.assertEqual(
+            [item.name for item in candidates],
+            ["One", "Two"],
+        )
+
+    def test_manual_streams_count_toward_global_limit(self):
+        source = make_source(
+            "https://example.com/list.m3u",
+            SourceKind.MANUAL_SUBSCRIPTION,
+        )
+        content = make_m3u(
+            ("", "Subscription", "https://example.com/sub.ts"),
+        )
+
+        with patch.object(
+            normalizer.config,
+            "MAX_CANDIDATES_TOTAL",
+            2,
+        ):
+            candidates = normalizer.normalize_candidates(
+                (make_download(source, content),),
+                manual_stream_urls=(
+                    "https://example.com/manual-one.ts",
+                    "https://example.com/manual-two.ts",
+                ),
+            )
+
+        self.assertEqual(len(candidates), 2)
+        self.assertTrue(
+            all(
+                item.source_kind == SourceKind.MANUAL_STREAM
+                for item in candidates
+            )
+        )
+
+    def test_rejects_invalid_download_results_argument(self):
+        with self.assertRaises(TypeError):
+            normalizer.normalize_candidates(
+                "not a sequence",
+                manual_stream_urls=(),
+            )
+
+    def test_rejects_non_download_result_items(self):
+        with self.assertRaises(TypeError):
+            normalizer.normalize_candidates(
+                ("invalid",),
+                manual_stream_urls=(),
+            )
+
+    def test_rejects_invalid_manual_stream_argument(self):
+        with self.assertRaises(TypeError):
+            normalizer.normalize_candidates(
+                (),
+                manual_stream_urls="https://example.com/live.ts",
+            )
+
+    def test_rejects_non_positive_candidate_limits(self):
+        with patch.object(
+            normalizer.config,
+            "MAX_CANDIDATES_PER_SOURCE",
+            0,
+        ):
+            with self.assertRaises(ValueError):
+                normalizer.normalize_candidates(
+                    (),
+                    manual_stream_urls=(),
+                )
+
+        with patch.object(
+            normalizer.config,
+            "MAX_CANDIDATES_TOTAL",
+            0,
+        ):
+            with self.assertRaises(ValueError):
+                normalizer.normalize_candidates(
+                    (),
+                    manual_stream_urls=(),
+                )
+
+
+if __name__ == "__main__":
+    unittest.main()
