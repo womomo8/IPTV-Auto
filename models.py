@@ -1,4 +1,3 @@
-
 """Shared data models for the IPTV pipeline.
 
 This module is the single source of truth for data structures exchanged
@@ -51,8 +50,25 @@ class SourceRecord:
 class DownloadResult:
     """Result of downloading a source or subscription.
 
-    success indicates whether the download request succeeded.
-    truncated indicates whether the downloaded content is incomplete.
+    success indicates whether the download request and data transfer
+    completed normally.
+
+    truncated independently indicates whether the returned content
+    is incomplete.
+
+    Examples:
+    - success=True, truncated=False:
+      The download completed normally and the content is complete.
+    - success=True, truncated=True:
+      The request completed normally, but reading stopped because of
+      an intentional size or time limit.
+    - success=False, truncated=True:
+      The transfer failed or was interrupted after partial content
+      had been received.
+    - success=False, truncated=False:
+      The request failed before any incomplete content was returned.
+
+    A truncated result is not automatically a program error.
     """
 
     source: SourceRecord
@@ -92,8 +108,10 @@ class NetworkResult:
     success means the request completed and passed URL, DNS, public IPv4,
     and actual remote IP safety checks.
 
-    It does not mean the live stream itself passed validation.
     HTTP status is reported separately through status_code.
+
+    Network request success does not mean that a live stream is playable.
+    Live stream validation is represented by ValidationResult.
     """
 
     success: bool
@@ -137,12 +155,41 @@ class FilterResult:
 
 @dataclass(frozen=True)
 class PublishResult:
+    """Result of publishing an IPTV subscription.
+
+    success must agree with exit_code:
+    - success=True requires ExitCode.SUCCESS.
+    - success=False requires a non-success exit code.
+
+    remote_verified means the remote Git state was verified successfully.
+    Therefore it requires both a successful push and a successful result.
+
+    A successful test-mode file generation does not require a Git push
+    or remote verification.
+    """
+
     success: bool
     exit_code: ExitCode
     target_path: str
     git_pushed: bool = False
     remote_verified: bool = False
     error: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.success != (self.exit_code == ExitCode.SUCCESS):
+            raise ValueError(
+                "PublishResult.success must agree with exit_code."
+            )
+
+        if self.remote_verified and not self.git_pushed:
+            raise ValueError(
+                "Remote verification requires a successful Git push."
+            )
+
+        if self.remote_verified and not self.success:
+            raise ValueError(
+                "A failed publish result cannot be remotely verified."
+            )
 
 
 @dataclass(frozen=True)
