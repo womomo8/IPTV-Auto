@@ -1,7 +1,7 @@
 
 # IPTV 自动订阅系统开发进度
 
-文档版本：2.1
+文档版本：2.2
 配套规范：MASTER_PLAN 3.52
 最后更新：2026-11-10
 
@@ -24,19 +24,20 @@ sources.py | 已提交，静态接口核对完成，实际测试未执行
 collector.py | 已提交，静态接口核对完成，实际测试未执行
 normalizer.py | 已提交，静态接口核对完成，实际测试未执行
 validator.py | 已提交，静态接口核对完成，实际测试未执行
+filter.py | 已提交，静态接口核对完成，实际测试未执行
 models.py 接口冻结 | 尚未完成
 Python 实际测试 | 尚未执行
 GitHub Actions 工作流 | 尚未开始
 正式订阅发布 | 尚未执行
 
-当前开发阶段：来源采集、候选整理和候选检测程序已完成代码编写，下一步实施 filter.py。
+当前开发阶段：来源采集、候选整理、候选检测和筛选程序已完成代码编写，下一步实施 publisher.py。
 
 说明：
 
 1. MASTER_PLAN 3.52 是唯一完整技术规范和验收依据。
 2. CORE_FLOW 1.0 用于遵循程序职责和实际调用顺序。
 3. models.py 和 config.py 的实际测试按当前安排推迟到后期统一执行。
-4. network.py、sources.py、collector.py、normalizer.py、validator.py 已提交并完成静态接口核对，但尚未执行实际测试。
+4. network.py、sources.py、collector.py、normalizer.py、validator.py、filter.py 已提交并完成静态接口核对，但尚未执行实际测试。
 5. 未完成实际测试的程序不得标记为已测试。
 6. models.py 接口尚未正式冻结，后续程序必须严格使用现有模型定义，不得自行重复定义接口结构。
 
@@ -51,7 +52,7 @@ GitHub Actions 工作流 | 尚未开始
 3 | normalizer.py | 待测试 | 静态核对完成 | 未执行 | M3U解析、候选规范化、去重和名额分配
 4 | network.py | 待测试 | 静态核对完成 | 未执行 | 统一 IPv4 网络请求服务
 5 | validator.py | 待测试 | 静态核对完成 | 未执行 | 检测编排、TS/HLS 验证，调用 network.py
-6 | filter.py | 未开始 | 未执行 | 未执行 | 筛选、地址去重、频道去重、生成 M3U
+6 | filter.py | 待测试 | 静态核对完成 | 未执行 | 验证结果筛选、地址去重、频道去重、生成 M3U
 7 | publisher.py | 未开始 | 未执行 | 未执行 | 文件质量保护、原子替换、Git 发布
 8 | main.py | 未开始 | 未执行 | 未执行 | 统一调度完整运行流程
 9 | GitHub Actions 工作流 | 未开始 | 未执行 | 未执行 | 每日自动、手动正式、手动测试
@@ -84,17 +85,16 @@ config.py | 待测试 | 统一运行参数、预算、并发、网络设置和�
 
 ## 四、当前待办
 
-1. 完成 filter.py，落实验证结果筛选、地址去重、频道去重和M3U生成。
-2. 完成 publisher.py，落实文件质量保护、原子替换和Git发布。
-3. 完成 main.py，统一调度完整运行流程。
-4. 完成 GitHub Actions 工作流，落实每日自动运行、手动正式运行和手动测试运行。
-5. 后期统一执行 models.py、config.py、network.py、sources.py、collector.py、normalizer.py、validator.py 及其他程序的实际测试。
-6. 完成 models.py 字段类型、默认值、不可变约束和状态约束测试。
-7. 完成 CORE_FLOW.md 第八节九类程序交接核对。
-8. 完成 MASTER_PLAN 3.52 字段语义核对。
-9. 所有模型检查通过后，正式冻结 models.py 接口字段。
-10. 后续程序只能导入和使用 models.py 中的类型，不得自行定义重复接口结构。
-11. 如确实需要修改接口，必须记录变更原因、影响范围以及需要同步调整的程序。
+1. 完成 publisher.py，落实文件质量保护、原子替换和Git发布。
+2. 完成 main.py，统一调度完整运行流程。
+3. 完成 GitHub Actions 工作流，落实每日自动运行、手动正式运行和手动测试运行。
+4. 后期统一执行 models.py、config.py、network.py、sources.py、collector.py、normalizer.py、validator.py、filter.py 及其他程序的实际测试。
+5. 完成 models.py 字段类型、默认值、不可变约束和状态约束测试。
+6. 完成 CORE_FLOW.md 第八节九类程序交接核对。
+7. 完成 MASTER_PLAN 3.52 字段语义核对。
+8. 所有模型检查通过后，正式冻结 models.py 接口字段。
+9. 后续程序只能导入和使用 models.py 中的类型，不得自行定义重复接口结构。
+10. 如确实需要修改接口，必须记录变更原因、影响范围以及需要同步调整的程序。
 
 接口结构性契约以 CORE_FLOW.md 第八节为依据；
 字段语义以 MASTER_PLAN 3.52 为依据；
@@ -113,6 +113,7 @@ config.py | 待测试 | 统一运行参数、预算、并发、网络设置和�
 5 | collector.py 尚未执行 Python 实际测试 | 下载、并发和预算截断运行行为尚未验证 | 待测试 | 后期统一执行
 6 | normalizer.py 尚未执行 Python 实际测试 | M3U解析、去重和名额分配运行行为尚未验证 | 待测试 | 后期统一执行
 7 | validator.py 尚未执行 Python 实际测试 | TS/HLS验证、并发和预算截断运行行为尚未验证 | 待测试 | 后期统一执行
+8 | filter.py 尚未执行 Python 实际测试 | 筛选、地址去重、频道去重和M3U生成行为尚未验证 | 待测试 | 后期统一执行
 
 ---
 
@@ -139,6 +140,9 @@ config.py | 待测试 | 统一运行参数、预算、并发、网络设置和�
 2026-11-10 | 更新候选整理模块开发状态，下一步进入 validator.py | PROGRESS.md | 文档更新；未涉及代码测试
 2026-11-10 | 新增候选验证模块，统一调用 network.py 完成TS/HLS验证、并发调度和检测预算控制 | validator.py | 已核对 GitHub 文件及 models.py、config.py、network.py 对应接口；静态核对完成；Python 实际测试尚未执行
 2026-11-10 | 更新候选验证模块开发状态，下一步进入 filter.py | PROGRESS.md | 文档更新；未涉及代码测试
+2026-11-10 | 新增筛选模块，实现验证通过结果筛选、地址去重、频道去重和M3U生成 | filter.py | 已核对 GitHub 文件及 models.py、config.py、sources.py 对应接口；静态核对完成；Python 实际测试尚未执行
+2026-11-10 | 修正筛选模块的频道展示名称来源，统一使用原始频道名称清理结果 | filter.py | 已核对 GitHub 文件；静态核对完成；Python 实际测试尚未执行
+2026-11-10 | 更新筛选模块开发状态，下一步进入 publisher.py | PROGRESS.md | 文档更新；未涉及代码测试
 
 ---
 
