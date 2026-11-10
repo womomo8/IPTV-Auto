@@ -1,26 +1,11 @@
 
-"""Unified IPv4-only HTTP/HTTPS network service.
-
-All project HTTP requests must go through this module.
-
-Responsibilities:
-- Validate URL scheme, host, credentials, and port.
-- Resolve and validate public IPv4 addresses.
-- Pin each request to the validated DNS results.
-- Verify the actual connected peer IP.
-- Handle redirects manually and validate every redirect target.
-- Enforce shared request deadlines, retries, and bounded response reads.
-- Return the shared NetworkResult model.
-
-This module does not parse subscriptions or validate TS/HLS streams.
-"""
+"""Shared IPv4-only HTTP/HTTPS network service."""
 
 from __future__ import annotations
 
 import asyncio
 import ipaddress
 import socket
-from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -31,26 +16,13 @@ from models import NetworkResult
 
 
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
-_RETRYABLE_ERRORS = (
-    asyncio.TimeoutError,
-    aiohttp.ClientConnectionError,
-    aiohttp.ServerDisconnectedError,
-)
-
-
-@dataclass(frozen=True)
-class _ValidatedURL:
-    url: str
-    hostname: str
-    port: int
-    is_https: bool
 
 
 class _PinnedIPv4Resolver(aiohttp.abc.AbstractResolver):
-    """Resolver that only returns IPv4 addresses validated beforehand."""
+    """Return only IPv4 addresses already checked by this module."""
 
     def __init__(self, addresses: tuple[str, ...]) -> None:
-        self._addresses = addresses
+        self.addresses = addresses
 
     async def resolve(
         self,
@@ -59,7 +31,7 @@ class _PinnedIPv4Resolver(aiohttp.abc.AbstractResolver):
         family: int = socket.AF_INET,
     ) -> list[dict]:
         if family not in (socket.AF_UNSPEC, socket.AF_INET):
-            raise OSError("IPv6 resolution is forbidden.")
+            raise OSError("IPv6 is forbidden.")
 
         return [
             {
@@ -70,15 +42,15 @@ class _PinnedIPv4Resolver(aiohttp.abc.AbstractResolver):
                 "proto": socket.IPPROTO_TCP,
                 "flags": 0,
             }
-            for address in self._addresses
+            for address in self.addresses
         ]
 
     async def close(self) -> None:
         return None
 
 
-def _error_result(
-    requested_url: str,
+def _failure(
+    url: str,
     message: str,
     *,
     content: bytes = b"",
@@ -86,24 +58,23 @@ def _error_result(
     final_url: Optional[str] = None,
     remote_ip: Optional[str] = None,
     content_type: Optional[str] = None,
-    bytes_received: int = 0,
     redirects: tuple[str, ...] = (),
 ) -> NetworkResult:
     return NetworkResult(
         success=False,
-        requested_url=requested_url,
+        requested_url=url,
         content=content,
         final_url=final_url,
         remote_ip=remote_ip,
         status_code=status_code,
         content_type=content_type,
-        bytes_received=bytes_received,
+        bytes_received=len(content),
         redirects=redirects,
         error=message,
     )
 
 
-def _normalize_and_validate_url(url: str) -> _ValidatedURL:
+def _validate_url(url: str) -> tuple[str, str, int]:
     if not isinstance(url, str) or not url.strip():
         raise ValueError("URL is empty or invalid.")
 
@@ -115,7 +86,7 @@ def _normalize_and_validate_url(url: str) -> _ValidatedURL:
     scheme = parts.scheme.lower()
 
     if scheme not in config.ALLOWED_URL_SCHEMES:
-        raise ValueError("Only HTTP and HTTPS URLs are allowed.")
+        raise ValueError("Only HTTP and HTTPS are allowed.")
 
     if not parts.netloc or not parts.hostname:
         raise ValueError("URL host is missing.")
@@ -125,72 +96,45 @@ def _normalize_and_validate_url(url: str) -> _ValidatedURL:
 
     hostname = parts.hostname.rstrip(".").lower()
 
-    if not hostname:
-        raise ValueError("URL hostname is invalid.")
-
-    # This project only supports IPv4. IPv6 literals are rejected.
-    if ":" in hostname:
-        raise ValueError("IPv6 addresses are forbidden.")
+    if not hostname or ":" in hostname:
+        raise ValueError("Invalid hostname or IPv6 address.")
 
     try:
         port = parts.port
     except ValueError as exc:
-        raise ValueError("URL port is invalid.") from exc
+        raise ValueError("Invalid URL port.") from exc
 
     if port is None:
         port = 443 if scheme == "https" else 80
 
-    if not (
-        config.MIN_TCP_PORT <= port <= config.MAX_TCP_PORT
-    ):
+    if not config.MIN_TCP_PORT <= port <= config.MAX_TCP_PORT:
         raise ValueError("URL port is outside the allowed range.")
 
-    # Rebuild the URL without credentials or fragments.
-    host_for_url = hostname
-
-    netloc = (
-        host_for_url
-        if port == (443 if scheme == "https" else 80)
-        else f"{host_for_url}:{port}"
-    )
+    default_port = 443 if scheme == "https" else 80
+    netloc = hostname if port == default_port else f"{hostname}:{port}"
 
     normalized = urlunsplit(
-        (
-            scheme,
-            netloc,
-            parts.path or "/",
-            parts.query,
-            "",
-        )
+        (scheme, netloc, parts.path or "/", parts.query, "")
     )
 
-    return _ValidatedURL(
-        url=normalized,
-        hostname=hostname,
-        port=port,
-        is_https=(scheme == "https"),
-    )
+    return normalized, hostname, port
 
 
 async def _resolve_public_ipv4(
     hostname: str,
     port: int,
 ) -> tuple[str, ...]:
-    """Resolve a hostname and reject the whole result if any IPv4 is unsafe."""
-
     try:
-        literal_ip = ipaddress.ip_address(hostname)
+        literal = ipaddress.ip_address(hostname)
     except ValueError:
-        literal_ip = None
+        literal = None
 
-    if literal_ip is not None:
-        if not isinstance(literal_ip, ipaddress.IPv4Address):
+    if literal is not None:
+        if not isinstance(literal, ipaddress.IPv4Address):
             raise ValueError("Only IPv4 addresses are allowed.")
-
-        if not literal_ip.is_global:
+        if not literal.is_global:
             raise ValueError("Non-public IPv4 address is forbidden.")
-
-        return (str(literal_ip),)
+        return (str(literal),)
 
     loop = asyncio.get_running_loop()
 
@@ -205,8 +149,8 @@ async def _resolve_public_ipv4(
             ),
             timeout=config.DNS_TIMEOUT_SECONDS,
         )
-    except asyncio.TimeoutError as exc:
-        raise asyncio.TimeoutError("DNS lookup timed out.") from exc
+    except asyncio.TimeoutError:
+        raise
     except OSError as exc:
         raise OSError("DNS lookup failed.") from exc
 
@@ -224,9 +168,7 @@ async def _resolve_public_ipv4(
             raise ValueError("DNS returned a non-IPv4 address.")
 
         if not parsed.is_global:
-            raise ValueError(
-                "DNS result contains a non-public IPv4 address."
-            )
+            raise ValueError("DNS returned a non-public IPv4 address.")
 
         if address not in addresses:
             addresses.append(address)
@@ -237,48 +179,44 @@ async def _resolve_public_ipv4(
     return tuple(addresses)
 
 
-def _check_response_headers(
-    response: aiohttp.ClientResponse,
-) -> None:
-    raw_headers = response.raw_headers
+def _check_headers(response: aiohttp.ClientResponse) -> None:
+    headers = response.raw_headers
 
-    if len(raw_headers) > config.MAX_HTTP_HEADERS_COUNT:
-        raise ValueError("HTTP response has too many headers.")
+    if len(headers) > config.MAX_HTTP_HEADERS_COUNT:
+        raise ValueError("Too many HTTP headers.")
 
-    total_bytes = 0
+    total = 0
 
-    for name, value in raw_headers:
+    for name, value in headers:
         line_size = len(name) + len(value) + 4
 
         if line_size > config.MAX_HTTP_HEADER_LINE_BYTES:
-            raise ValueError("HTTP response header line is too large.")
+            raise ValueError("HTTP header line exceeds size limit.")
 
-        total_bytes += line_size
+        total += line_size
 
-        if total_bytes > config.MAX_HTTP_HEADERS_BYTES:
-            raise ValueError("HTTP response headers exceed size limit.")
+        if total > config.MAX_HTTP_HEADERS_BYTES:
+            raise ValueError("HTTP headers exceed total size limit.")
 
-    content_encoding = response.headers.get(
+    encoding = response.headers.get(
         "Content-Encoding", "identity"
     ).strip().lower()
 
-    if content_encoding not in ("", "identity"):
-        raise ValueError("Compressed HTTP responses are forbidden.")
+    if encoding not in ("", "identity"):
+        raise ValueError("Compressed responses are forbidden.")
 
 
-def _get_actual_remote_ip(
-    response: aiohttp.ClientResponse,
-) -> str:
+def _actual_remote_ip(response: aiohttp.ClientResponse) -> str:
     connection = response.connection
 
-    if connection is None:
+    if connection is not None:
+        transport = connection.transport
+    else:
         protocol = getattr(response, "_protocol", None)
         transport = getattr(protocol, "transport", None)
-    else:
-        transport = connection.transport
 
     if transport is None:
-        raise OSError("Unable to inspect the actual remote connection.")
+        raise OSError("Cannot inspect actual remote connection.")
 
     peer = transport.get_extra_info("peername")
 
@@ -286,52 +224,40 @@ def _get_actual_remote_ip(
         raise OSError("Remote peer address is unavailable.")
 
     try:
-        remote = ipaddress.ip_address(peer[0])
+        address = ipaddress.ip_address(peer[0])
     except ValueError as exc:
-        raise OSError("Remote peer address is invalid.") from exc
+        raise OSError("Invalid remote peer address.") from exc
 
-    if not isinstance(remote, ipaddress.IPv4Address):
+    if not isinstance(address, ipaddress.IPv4Address):
         raise OSError("Connected peer is not IPv4.")
 
-    if not remote.is_global:
+    if not address.is_global:
         raise OSError("Connected peer is not a public IPv4 address.")
 
-    return str(remote)
+    return str(address)
 
 
 async def _read_limited(
     response: aiohttp.ClientResponse,
     max_bytes: int,
 ) -> tuple[bytes, bool]:
-    """Read at most max_bytes plus one byte to detect overflow."""
-
     chunks: list[bytes] = []
     received = 0
 
     async for chunk in response.content.iter_chunked(16 * 1024):
-        if not chunk:
-            continue
-
         remaining = max_bytes - received
 
         if len(chunk) > remaining:
             if remaining > 0:
                 chunks.append(chunk[:remaining])
-                received += remaining
-
             return b"".join(chunks), True
 
         chunks.append(chunk)
         received += len(chunk)
 
-        if received >= max_bytes:
-            # Read one additional byte to distinguish exact size from overflow.
+        if received == max_bytes:
             extra = await response.content.read(1)
-
-            if extra:
-                return b"".join(chunks), True
-
-            break
+            return b"".join(chunks), bool(extra)
 
     return b"".join(chunks), False
 
@@ -342,30 +268,181 @@ async def _request_once(
     deadline: float,
 ) -> NetworkResult:
     current_url = requested_url
-    redirect_chain: list[str] = []
-    last_remote_ip: Optional[str] = None
+    redirects: list[str] = []
 
     for redirect_number in range(config.MAX_REDIRECTS + 1):
         remaining = deadline - asyncio.get_running_loop().time()
 
         if remaining <= 0:
-            raise asyncio.TimeoutError("Request total budget exhausted.")
+            raise asyncio.TimeoutError("Request budget exhausted.")
 
-        validated = _normalize_and_validate_url(current_url)
+        normalized, hostname, port = _validate_url(current_url)
 
-        addresses = await _resolve_public_ipv4(
-            validated.hostname,
-            validated.port,
-        )
+        addresses = await _resolve_public_ipv4(hostname, port)
 
         remaining = deadline - asyncio.get_running_loop().time()
 
         if remaining <= 0:
-            raise asyncio.TimeoutError("Request total budget exhausted.")
+            raise asyncio.TimeoutError("Request budget exhausted.")
 
         resolver = _PinnedIPv4Resolver(addresses)
 
         connector = aiohttp.TCPConnector(
             resolver=resolver,
             family=socket.AF_INET,
-            use
+            use_dns_cache=False,
+            limit=1,
+        )
+
+        timeout = aiohttp.ClientTimeout(
+            total=None,
+            connect=min(config.TCP_CONNECT_TIMEOUT_SECONDS, remaining),
+            sock_connect=min(config.TCP_CONNECT_TIMEOUT_SECONDS, remaining),
+            sock_read=min(config.NETWORK_READ_TIMEOUT_SECONDS, remaining),
+        )
+
+        try:
+            async with aiohttp.ClientSession(
+                connector=connector,
+                timeout=timeout,
+                trust_env=config.TRUST_ENV_PROXY,
+                auto_decompress=config.AUTO_DECOMPRESS,
+                headers={
+                    "Accept-Encoding": config.ACCEPT_ENCODING,
+                    "User-Agent": "IPTV-Auto/1.0",
+                },
+                max_line_size=config.MAX_HTTP_HEADER_LINE_BYTES,
+                max_field_size=config.MAX_HTTP_HEADER_LINE_BYTES,
+                max_headers=config.MAX_HTTP_HEADERS_COUNT,
+            ) as session:
+                async with session.get(
+                    normalized,
+                    allow_redirects=False,
+                    ssl=True,
+                ) as response:
+                    _check_headers(response)
+
+                    remote_ip = _actual_remote_ip(response)
+
+                    if remote_ip not in addresses:
+                        raise OSError(
+                            "Actual remote IP differs from validated DNS."
+                        )
+
+                    if response.status in _REDIRECT_STATUSES:
+                        location = response.headers.get("Location")
+
+                        if not location:
+                            raise ValueError(
+                                "Redirect response has no Location header."
+                            )
+
+                        if redirect_number >= config.MAX_REDIRECTS:
+                            raise ValueError("Too many redirects.")
+
+                        next_url = urljoin(normalized, location)
+                        next_normalized, _, _ = _validate_url(next_url)
+
+                        redirects.append(next_normalized)
+                        current_url = next_normalized
+                        continue
+
+                    content, exceeded = await _read_limited(
+                        response,
+                        max_bytes,
+                    )
+
+                    if exceeded:
+                        return _failure(
+                            requested_url,
+                            "Response exceeded read limit.",
+                            content=content,
+                            status_code=response.status,
+                            final_url=normalized,
+                            remote_ip=remote_ip,
+                            content_type=response.headers.get("Content-Type"),
+                            redirects=tuple(redirects),
+                        )
+
+                    return NetworkResult(
+                        success=True,
+                        requested_url=requested_url,
+                        content=content,
+                        final_url=normalized,
+                        remote_ip=remote_ip,
+                        status_code=response.status,
+                        content_type=response.headers.get("Content-Type"),
+                        bytes_received=len(content),
+                        redirects=tuple(redirects),
+                        error=None,
+                    )
+        finally:
+            await connector.close()
+
+    return _failure(
+        requested_url,
+        "Redirect processing failed.",
+        redirects=tuple(redirects),
+    )
+
+
+async def request(
+    url: str,
+    max_bytes: int,
+    *,
+    timeout_seconds: Optional[float] = None,
+) -> NetworkResult:
+    """Perform one bounded IPv4-only GET request."""
+
+    if not isinstance(max_bytes, int) or isinstance(max_bytes, bool):
+        return _failure(url, "max_bytes must be an integer.")
+
+    if max_bytes <= 0:
+        return _failure(url, "max_bytes must be positive.")
+
+    if timeout_seconds is None:
+        timeout_seconds = config.CANDIDATE_VALIDATION_BUDGET_SECONDS
+
+    if timeout_seconds <= 0:
+        return _failure(url, "timeout_seconds must be positive.")
+
+    try:
+        _validate_url(url)
+    except (TypeError, ValueError) as exc:
+        return _failure(url, str(exc))
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    attempts = config.MAX_NETWORK_RETRIES + 1
+
+    for attempt in range(attempts):
+        remaining = deadline - loop.time()
+
+        if remaining <= 0:
+            return _failure(url, "Request total budget exhausted.")
+
+        try:
+            return await asyncio.wait_for(
+                _request_once(url, max_bytes, deadline),
+                timeout=remaining,
+            )
+        except aiohttp.ClientSSLError:
+            return _failure(url, "TLS verification failed.")
+        except (ValueError, TypeError) as exc:
+            return _failure(url, str(exc))
+        except asyncio.TimeoutError:
+            if attempt + 1 >= attempts:
+                return _failure(url, "Network request timed out.")
+        except aiohttp.ClientConnectionError as exc:
+            if attempt + 1 >= attempts:
+                return _failure(
+                    url,
+                    f"Connection error: {type(exc).__name__}",
+                )
+        except (aiohttp.ClientError, OSError) as exc:
+            return _failure(
+                url,
+                f"Network request error: {type(exc).__name__}",
+            )
+
+    return _failure(url, "Network request failed.")
