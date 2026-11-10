@@ -152,9 +152,7 @@ def _git_text(root: Path, args: list[str], timeout: float) -> str:
 
 def _publish_git(root: Path, relative_path: str) -> tuple[bool, bool]:
     """Commit only the output file, push, and verify the remote SHA."""
-    deadline = (
-        time.monotonic() + config.PUBLISH_BUDGET_SECONDS
-    )
+    deadline = time.monotonic() + config.PUBLISH_BUDGET_SECONDS
 
     def remaining() -> float:
         return deadline - time.monotonic()
@@ -357,4 +355,28 @@ def publish(
         )
 
     try:
- 
+        pushed, verified = _publish_git(
+            root,
+            relative_target.as_posix(),
+        )
+        return PublishResult(
+            True,
+            ExitCode.SUCCESS,
+            configured,
+            git_pushed=pushed,
+            remote_verified=verified,
+        )
+    except GitPublishUnconfirmed as exc:
+        return PublishResult(
+            False,
+            ExitCode.PUBLISH_UNCONFIRMED,
+            configured,
+            error=str(exc),
+        )
+    except (GitPublishError, OSError, subprocess.TimeoutExpired) as exc:
+        return PublishResult(
+            False,
+            ExitCode.PUBLISH_ERROR,
+            configured,
+            error=str(exc),
+        )
