@@ -1,3 +1,4 @@
+
 """Business tests for validated candidate filtering and M3U generation."""
 
 import unittest
@@ -341,4 +342,4 @@ class TestM3UGeneration(unittest.TestCase):
             '#EXTINF:-1 tvg-name="Channel",Channel',
         )
 
-    def test_quotes_and_line_b
+    def test_quotes_and_line_
