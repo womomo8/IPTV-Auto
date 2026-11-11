@@ -1,3 +1,4 @@
+
 """Validate allocated IPTV candidates through the shared IPv4 network layer."""
 
 from __future__ import annotations
@@ -564,12 +565,21 @@ async def validate_candidates(
     ]
     producer_task = asyncio.create_task(producer())
 
+    # Keep a reference to the aggregate Future so its cancellation
+    # exception can be explicitly retrieved during cleanup.
+    task_group = asyncio.gather(producer_task, *workers)
+
     try:
         await asyncio.wait_for(
-            asyncio.gather(producer_task, *workers),
+            task_group,
             timeout=config.DETECTION_BUDGET_SECONDS,
         )
     except asyncio.TimeoutError:
+        try:
+            await task_group
+        except asyncio.CancelledError:
+            pass
+
         producer_task.cancel()
 
         for task in workers:
@@ -581,6 +591,11 @@ async def validate_candidates(
             return_exceptions=True,
         )
     except asyncio.CancelledError:
+        try:
+            await task_group
+        except asyncio.CancelledError:
+            pass
+
         producer_task.cancel()
 
         for task in workers:
