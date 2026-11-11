@@ -1,3 +1,4 @@
+
 """Filter validated IPTV candidates and generate standard M3U content.
 
 This module:
@@ -34,12 +35,20 @@ _SOURCE_PRIORITY = {
 
 
 def _clean_display_text(value: Optional[str]) -> str:
-    """Normalize display text while preserving its original casing."""
+    """Normalize text for channel identity comparison and group output."""
     if not isinstance(value, str):
         return ""
 
     normalized = unicodedata.normalize("NFKC", value)
     return " ".join(normalized.split())
+
+
+def _clean_channel_display_name(value: Optional[str]) -> str:
+    """Clean whitespace while preserving the original display characters."""
+    if not isinstance(value, str):
+        return ""
+
+    return " ".join(value.split())
 
 
 def _clean_tvg_id(value: Optional[str]) -> Optional[str]:
@@ -67,8 +76,8 @@ def _attribute_value(value: str) -> str:
 
 
 def _channel_display_name(candidate: Candidate) -> str:
-    """Use the original EXTINF channel name as the display name."""
-    return _clean_display_text(candidate.name)
+    """Use the cleaned original channel name as the display name."""
+    return _clean_channel_display_name(candidate.name)
 
 
 def _candidate_priority(
