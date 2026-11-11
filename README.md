@@ -102,7 +102,7 @@ MANUAL_STREAM_URLS: list[str] = [
 
 ### 1. 每日自动运行
 
-每日北京时间 06:00 自动运行，对应 GitHub Actions UTC 前一日 22:00。
+每日北京时间 06:17 自动运行，对应 GitHub Actions UTC 前一日 22:17。
 
 自动运行执行正式发布流程。
 
