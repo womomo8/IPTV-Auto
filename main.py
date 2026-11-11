@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import Counter, defaultdict
 import logging
 import time
 from dataclasses import replace
@@ -412,7 +413,7 @@ async def run_pipeline(mode: RunMode) -> int:
             for result in validation_results
             if not result.completed
         )
-
+        _log_validation_diagnostics(validation_results)
         detection_incomplete = candidates_incomplete > 0
         run_incomplete = (
             run_incomplete or detection_incomplete
