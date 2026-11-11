@@ -2,7 +2,6 @@
 """Business tests for validated candidate filtering and M3U generation."""
 
 import unittest
-from unittest.mock import patch
 
 import filter as iptv_filter
 from models import Candidate, SourceKind, StreamType, ValidationResult
@@ -344,4 +343,70 @@ class TestM3UGeneration(unittest.TestCase):
             group_title="Sports",
         )
 
-        result = iptv_filter.filter_candidates
+        result = iptv_filter.filter_candidates((make_result(candidate),))
+
+        self.assertEqual(result.channel_count, 1)
+        self.assertEqual(
+            result.m3u_content,
+            '#EXTM3U\n'
+            '#EXTINF:-1 tvg-id="channel-1" '
+            'tvg-name="Channel" group-title="Sports",Channel\n'
+            'https://example.com/live.ts\n',
+        )
+
+    def test_missing_optional_fields_are_omitted(self):
+        candidate = make_candidate(
+            "https://example.com/live.ts",
+            "Channel",
+        )
+
+        result = iptv_filter.filter_candidates((make_result(candidate),))
+
+        self.assertEqual(
+            result.m3u_content.splitlines()[1],
+            '#EXTINF:-1 tvg-name="Channel",Channel',
+        )
+
+    def test_quotes_and_line_breaks_are_cleaned(self):
+        candidate = make_candidate(
+            "https://example.com/live.ts",
+            'News "HD"\nChannel',
+            tvg_id='id"\nvalue',
+            group_title='Group"\nName',
+        )
+
+        result = iptv_filter.filter_candidates((make_result(candidate),))
+
+        self.assertEqual(result.channel_count, 1)
+        self.assertIn("tvg-id=\"id' value\"", result.m3u_content)
+        self.assertIn("tvg-name=\"News 'HD' Channel\"", result.m3u_content)
+        self.assertIn("group-title=\"Group' Name\"", result.m3u_content)
+        self.assertNotIn("\r", result.m3u_content)
+
+
+class TestFilterBudget(unittest.TestCase):
+
+    def test_final_budget_check_raises_when_budget_expires(self):
+        candidate = make_candidate(
+            "https://example.com/live.ts",
+            "Channel",
+        )
+        result = make_result(candidate)
+
+        original_monotonic = iptv_filter.time.monotonic
+        ticks = iter((100.0, 100.0, 100.0, 130.0))
+
+        try:
+            iptv_filter.time.monotonic = lambda: next(ticks)
+
+            with self.assertRaisesRegex(
+                TimeoutError,
+                "Filter stage budget exhausted",
+            ):
+                iptv_filter.filter_candidates((result,))
+        finally:
+            iptv_filter.time.monotonic = original_monotonic
+
+
+if __name__ == "__main__":
+    unittest.main()
