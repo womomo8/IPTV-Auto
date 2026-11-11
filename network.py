@@ -1,4 +1,3 @@
-
 """Shared IPv4-only HTTP/HTTPS network service."""
 
 from __future__ import annotations
@@ -16,6 +15,22 @@ from models import NetworkResult
 
 
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+
+_SPECIAL_USE_IPV4_NETWORKS = (
+    ipaddress.ip_network("192.88.99.0/24"),
+)
+
+
+def _is_public_unicast_ipv4(address: ipaddress.IPv4Address) -> bool:
+    """Return whether an IPv4 address is globally reachable unicast."""
+    return (
+        address.is_global
+        and not address.is_multicast
+        and not any(
+            address in network
+            for network in _SPECIAL_USE_IPV4_NETWORKS
+        )
+    )
 
 
 class _ResponseReadError(Exception):
@@ -150,8 +165,12 @@ async def _resolve_public_ipv4(
     if literal is not None:
         if not isinstance(literal, ipaddress.IPv4Address):
             raise ValueError("Only IPv4 addresses are allowed.")
-        if not literal.is_global:
-            raise ValueError("Non-public IPv4 address is forbidden.")
+
+        if not _is_public_unicast_ipv4(literal):
+            raise ValueError(
+                "Non-public or non-unicast IPv4 address is forbidden."
+            )
+
         return (str(literal),)
 
     loop = asyncio.get_running_loop()
@@ -185,8 +204,10 @@ async def _resolve_public_ipv4(
         if not isinstance(parsed, ipaddress.IPv4Address):
             raise ValueError("DNS returned a non-IPv4 address.")
 
-        if not parsed.is_global:
-            raise ValueError("DNS returned a non-public IPv4 address.")
+        if not _is_public_unicast_ipv4(parsed):
+            raise ValueError(
+                "DNS returned a non-public or non-unicast IPv4 address."
+            )
 
         if address not in addresses:
             addresses.append(address)
@@ -249,8 +270,10 @@ def _actual_remote_ip(response: aiohttp.ClientResponse) -> str:
     if not isinstance(address, ipaddress.IPv4Address):
         raise OSError("Connected peer is not IPv4.")
 
-    if not address.is_global:
-        raise OSError("Connected peer is not a public IPv4 address.")
+    if not _is_public_unicast_ipv4(address):
+        raise OSError(
+            "Connected peer is not a public unicast IPv4 address."
+        )
 
     return str(address)
 
@@ -293,11 +316,8 @@ async def _read_limited(
     content_length = response.content_length
 
     if content_length is None:
-        # Unknown-length response: only mark incomplete if EOF
-        # has not been confirmed. Do not read an additional byte.
         exceeded = not response.content.at_eof()
     else:
-        # A declared length equal to the consumed bytes is complete.
         exceeded = content_length != received
 
     return content, exceeded, received
@@ -499,7 +519,6 @@ async def request(
                 status_code=exc.status,
             )
         except (ValueError, TypeError) as exc:
-            return _failure(url, str(exc))
             return _failure(url, str(exc))
         except asyncio.TimeoutError:
             if attempt + 1 >= attempts:
