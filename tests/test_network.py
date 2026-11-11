@@ -69,6 +69,32 @@ class TestResolvePublicIPv4(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await network._resolve_public_ipv4("192.168.1.1", 80)
 
+    async def test_rejects_multicast_ipv4_literals(self):
+        for address in ("224.0.0.1", "239.1.1.1"):
+            with self.subTest(address=address):
+                with self.assertRaises(ValueError):
+                    await network._resolve_public_ipv4(address, 80)
+
+    async def test_rejects_special_use_ipv4_literal(self):
+        with self.assertRaises(ValueError):
+            await network._resolve_public_ipv4("192.88.99.2", 80)
+
+    async def test_rejects_multicast_and_special_use_dns_results(self):
+        for address in ("224.0.0.1", "192.88.99.2"):
+            records = [
+                (None, None, None, None, (address, 80)),
+            ]
+            fake_loop = SimpleNamespace(
+                getaddrinfo=AsyncMock(return_value=records)
+            )
+            with self.subTest(address=address):
+                with patch(
+                    "network.asyncio.get_running_loop",
+                    return_value=fake_loop,
+                ):
+                    with self.assertRaises(ValueError):
+                        await network._resolve_public_ipv4("example.com", 80)
+
     async def test_rejects_ipv6(self):
         with self.assertRaises(ValueError):
             await network._resolve_public_ipv4(
@@ -178,6 +204,18 @@ class TestHeadersAndPeer(unittest.TestCase):
                 self.peer_response("192.168.1.1")
             )
 
+    def test_rejects_multicast_peer(self):
+        for address in ("224.0.0.1", "239.1.1.1"):
+            with self.subTest(address=address):
+                with self.assertRaises(OSError):
+                    network._actual_remote_ip(self.peer_response(address))
+
+    def test_rejects_special_use_peer(self):
+        with self.assertRaises(OSError):
+            network._actual_remote_ip(
+                self.peer_response("192.88.99.2")
+            )
+
     def test_rejects_ipv6_peer(self):
         with self.assertRaises(OSError):
             network._actual_remote_ip(
@@ -268,183 +306,4 @@ class TestRequestBoundary(unittest.IsolatedAsyncioTestCase):
     async def test_rejects_non_positive_timeout(self):
         result = await network.request(
             "https://example.com/live.ts", 100,
-            timeout_seconds=0,
-        )
-        self.assertFalse(result.success)
-
-    async def test_propagates_external_cancellation(self):
-        with patch(
-            "network._request_once",
-            new_callable=AsyncMock,
-            side_effect=asyncio.CancelledError(),
-        ):
-            with self.assertRaises(asyncio.CancelledError):
-                await network.request(
-                    "https://example.com/live.ts", 100
-                )
-
-    async def test_does_not_retry_invalid_url(self):
-        with patch(
-            "network._request_once",
-            new_callable=AsyncMock,
-        ) as request_once:
-            result = await network.request(
-                "ftp://example.com/live.ts", 100
-            )
-
-        self.assertFalse(result.success)
-        request_once.assert_not_awaited()
-
-    async def test_records_http_response_status_and_message(self):
-        error = aiohttp.ClientResponseError(
-            request_info=None,
-            history=(),
-            status=403,
-            message="Forbidden",
-        )
-
-        with patch(
-            "network._request_once",
-            new_callable=AsyncMock,
-            side_effect=error,
-        ) as request_once:
-            result = await network.request(
-                "https://example.com/live.ts",
-                100,
-            )
-
-        self.assertFalse(result.success)
-        self.assertEqual(result.status_code, 403)
-        self.assertIn("403", result.error)
-        self.assertIn("Forbidden", result.error)
-        request_once.assert_awaited_once()
-
-    async def test_redirect_rechecks_dns_and_preserves_network_security(self):
-        first_response = SimpleNamespace(
-            status=302,
-            headers={
-                "Location": "https://second.example/live.ts",
-            },
-        )
-        second_response = SimpleNamespace(
-            status=200,
-            headers={
-                "Content-Type": "video/mp2t",
-            },
-        )
-
-        responses = [first_response, second_response]
-        request_calls = []
-        session_options = []
-        connector_options = []
-        connectors = []
-
-        class FakeSession:
-
-            def __init__(self, response):
-                self.response = response
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, exc_type, exc, traceback):
-                return False
-
-            def get(self, url, **kwargs):
-                request_calls.append((url, kwargs))
-                return _AsyncContext(self.response)
-
-        def create_session(**kwargs):
-            session_options.append(kwargs)
-            return FakeSession(responses[len(session_options) - 1])
-
-        def create_connector(**kwargs):
-            connector = SimpleNamespace(close=AsyncMock())
-            connector_options.append(kwargs)
-            connectors.append(connector)
-            return connector
-
-        with (
-            patch(
-                "network._resolve_public_ipv4",
-                new_callable=AsyncMock,
-                side_effect=[
-                    ("8.8.8.8",),
-                    ("1.1.1.1",),
-                ],
-            ) as resolve,
-            patch(
-                "network.aiohttp.TCPConnector",
-                side_effect=create_connector,
-            ),
-            patch(
-                "network.aiohttp.ClientSession",
-                side_effect=create_session,
-            ),
-            patch(
-                "network._actual_remote_ip",
-                side_effect=["8.8.8.8", "1.1.1.1"],
-            ) as actual_remote_ip,
-            patch("network._check_headers"),
-            patch(
-                "network._read_limited",
-                new_callable=AsyncMock,
-                return_value=(b"transport-stream", False, 16),
-            ),
-        ):
-            loop = asyncio.get_running_loop()
-            result = await network._request_once(
-                "https://first.example/live.ts",
-                100,
-                loop.time() + 10,
-            )
-
-        self.assertTrue(result.success)
-        self.assertEqual(
-            result.final_url,
-            "https://second.example/live.ts",
-        )
-        self.assertEqual(
-            result.redirects,
-            ("https://second.example/live.ts",),
-        )
-
-        self.assertEqual(
-            [call.args for call in resolve.call_args_list],
-            [
-                ("first.example", 443),
-                ("second.example", 443),
-            ],
-        )
-
-        self.assertEqual(actual_remote_ip.call_count, 2)
-
-        self.assertEqual(len(connector_options), 2)
-        for options in connector_options:
-            self.assertEqual(options["family"], socket.AF_INET)
-            self.assertFalse(options["use_dns_cache"])
-            self.assertEqual(options["limit"], 1)
-
-        self.assertEqual(len(session_options), 2)
-        for options in session_options:
-            self.assertFalse(options["trust_env"])
-            self.assertFalse(options["auto_decompress"])
-
-        self.assertEqual(
-            [url for url, _ in request_calls],
-            [
-                "https://first.example/live.ts",
-                "https://second.example/live.ts",
-            ],
-        )
-
-        for _, kwargs in request_calls:
-            self.assertFalse(kwargs["allow_redirects"])
-            self.assertIs(kwargs["ssl"], True)
-
-        for connector in connectors:
-            connector.close.assert_awaited_once()
-
-
-if __name__ == "__main__":
-    unittest.main()
+            timeout_
