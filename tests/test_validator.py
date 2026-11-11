@@ -11,6 +11,7 @@ from models import (
     NetworkResult,
     SourceKind,
     StreamType,
+    ValidationResult,
 )
 
 
@@ -339,7 +340,6 @@ class TestValidateCandidates(unittest.IsolatedAsyncioTestCase):
 
         async def fake_validate(candidate):
             await asyncio.sleep(0)
-            from models import ValidationResult
             return ValidationResult(
                 candidate=candidate,
                 passed=True,
@@ -357,4 +357,78 @@ class TestValidateCandidates(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [item.candidate.url for item in results],
             [item.url for item in candidates],
+        )
+
+    async def test_detection_budget_preserves_completed_results_and_marks_pending(self):
+        candidates = (
+            make_candidate("https://example.com/first.ts", 0),
+            make_candidate("https://example.com/second.ts", 1),
+            make_candidate("https://example.com/third.ts", 2),
+        )
+
+        second_started = asyncio.Event()
+        second_cancelled = asyncio.Event()
+        called_urls = []
+
+        async def fake_validate(candidate):
+            called_urls.append(candidate.url)
+
+            if candidate.url.endswith("first.ts"):
+                return ValidationResult(
+                    candidate=candidate,
+                    passed=True,
+                    stream_type=StreamType.TS,
+                    completed=True,
+                )
+
+            if candidate.url.endswith("second.ts"):
+                second_started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    second_cancelled.set()
+
+            self.fail("A queued candidate must not start after budget expiry.")
+
+        with (
+            patch(
+                "validator._validate_one",
+                new_callable=AsyncMock,
+                side_effect=fake_validate,
+            ),
+            patch.multiple(
+                "validator.config",
+                MAX_CONCURRENT_VALIDATIONS=1,
+                VALIDATION_WAITING_QUEUE_LIMIT=1,
+                DETECTION_BUDGET_SECONDS=0.1,
+                CANDIDATE_VALIDATION_BUDGET_SECONDS=8,
+            ),
+        ):
+            results = await validator.validate_candidates(candidates)
+
+        self.assertTrue(second_started.is_set())
+        self.assertTrue(second_cancelled.is_set())
+
+        self.assertEqual(
+            [item.candidate.url for item in results],
+            [item.url for item in candidates],
+        )
+
+        self.assertTrue(results[0].completed)
+        self.assertTrue(results[0].passed)
+
+        for result in results[1:]:
+            self.assertFalse(result.completed)
+            self.assertFalse(result.passed)
+            self.assertEqual(
+                result.reason,
+                "Detection stage budget exhausted.",
+            )
+
+        self.assertEqual(
+            called_urls,
+            [
+                "https://example.com/first.ts",
+                "https://example.com/second.ts",
+            ],
         )
