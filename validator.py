@@ -1,4 +1,3 @@
-
 """Validate allocated IPTV candidates through the shared IPv4 network layer."""
 
 from __future__ import annotations
@@ -31,6 +30,24 @@ def _http_status_ok(result: NetworkResult) -> bool:
 
 def _http_ok(result: NetworkResult) -> bool:
     return result.success and _http_status_ok(result)
+
+
+def _http_failure_reason(
+    result: NetworkResult,
+    fallback: str,
+) -> str:
+    """Preserve HTTP status details without duplicating existing errors."""
+    status_code = result.status_code
+
+    if status_code is not None and not 200 <= status_code < 300:
+        if result.error:
+            if f"status={status_code}" in result.error:
+                return result.error
+            return f"HTTP status {status_code}: {result.error}"
+
+        return f"HTTP status {status_code}"
+
+    return result.error or fallback
 
 
 def _bounded_prefix_ok(result: NetworkResult) -> bool:
@@ -201,7 +218,10 @@ async def _fetch_playlist(
     )
 
     if not _http_ok(result):
-        return None, result.error or "HLS playlist request failed."
+        return None, _http_failure_reason(
+            result,
+            "HLS playlist request failed.",
+        )
 
     if _playlist_text(result) is None:
         return None, "Invalid or non-UTF-8 HLS playlist."
@@ -218,9 +238,7 @@ async def _fetch_playlist(
         return None, unsupported
 
     return result, None
-
-
-async def _validate_media_playlist(
+    async def _validate_media_playlist(
     playlist_url: str,
     deadline: float,
     *,
@@ -279,7 +297,10 @@ async def _validate_media_playlist(
         _http_ok(segment_result)
         or _bounded_prefix_ok(segment_result)
     ):
-        return False, segment_result.error or "HLS segment request failed."
+        return False, _http_failure_reason(
+            segment_result,
+            "HLS segment request failed.",
+        )
 
     if not _has_ts_sync(segment_result.content):
         return False, "HLS segment does not contain valid MPEG-TS sync."
@@ -293,8 +314,9 @@ async def _validate_hls(
     deadline: float,
 ) -> tuple[bool, Optional[str]]:
     if not _http_ok(initial_result):
-        return False, (
-            initial_result.error or "HLS playlist request failed."
+        return False, _http_failure_reason(
+            initial_result,
+            "HLS playlist request failed.",
         )
 
     text = _playlist_text(initial_result)
@@ -465,10 +487,8 @@ async def _validate_one(candidate: Candidate) -> ValidationResult:
             stream_type=StreamType.UNKNOWN,
             completed=True,
             reason=f"Validation error: {type(exc).__name__}",
-        )
-
-
-async def validate_candidates(
+    )
+        async def validate_candidates(
     candidates: Sequence[Candidate],
 ) -> tuple[ValidationResult, ...]:
     """Validate allocated candidates in stable input order."""
@@ -582,4 +602,5 @@ async def validate_candidates(
     return tuple(
         result for result in results
         if result is not None
-    )
+                )
+    
