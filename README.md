@@ -1,5 +1,4 @@
-
-# IPTV 自动订阅系统
+IPTV 自动订阅系统
 
 轻量、自动化运行的 IPTV 订阅生成与发布系统。
 
@@ -7,25 +6,29 @@
 
 来源管理 → 订阅采集 → 数据整理 → IPv4 网络检测 → TS/HLS 直播流验证 → 筛选去重 → 生成 M3U → 发布更新。
 
-正式订阅文件：
+正式订阅文件
 
-```text
-output/iptv.m3u
-```
+"output/iptv.m3u"
 
-测试订阅文件：
+正式订阅地址：
 
-```text
-output/test/iptv-test.m3u
-```
+https://raw.githubusercontent.com/womomo8/IPTV-Auto/main/output/iptv.m3u
 
-> 本项目以 `MASTER_PLAN.md` 为唯一完整技术规范和验收依据。  
-> 本文档只负责项目简介、运行方式和订阅地址；与 `MASTER_PLAN.md` 冲突时，以 `MASTER_PLAN.md` 为准。  
-> 开发进度和实际测试结果见 `PROGRESS.md`；总体架构和调用流程见 `CORE_FLOW.md`。
+测试订阅文件
+
+"output/test/iptv-test.m3u"
+
+测试订阅地址：
+
+https://raw.githubusercontent.com/womomo8/IPTV-Auto/main/output/test/iptv-test.m3u
+
+«本项目以 "MASTER_PLAN.md" 为唯一完整技术规范和验收依据。
+本文档只负责项目简介、运行方式和订阅地址；与 "MASTER_PLAN.md" 冲突时，以 "MASTER_PLAN.md" 为准。
+开发进度和实际测试结果见 "PROGRESS.md"；总体架构和调用流程见 "CORE_FLOW.md"。»
 
 ---
 
-## 一、项目特点
+一、项目特点
 
 - 五阶段流程：采集、整理、检测、筛选、发布。
 - 六个核心程序职责分离。
@@ -41,9 +44,8 @@ output/test/iptv-test.m3u
 
 ---
 
-## 二、目录结构
+二、目录结构
 
-```text
 .
 ├── MASTER_PLAN.md          # 唯一完整技术规范和验收依据
 ├── CORE_FLOW.md            # 总体架构与调用流程
@@ -63,15 +65,13 @@ output/test/iptv-test.m3u
     ├── iptv.m3u            # 正式订阅
     └── test/
         └── iptv-test.m3u   # 测试订阅
-```
 
 ---
 
-## 三、人工来源配置
+三、人工来源配置
 
-人工来源统一配置在 `config.py`：
+人工来源统一配置在 "config.py"：
 
-```python
 MANUAL_SUBSCRIPTION_SOURCES: list[str] = [
     # 每项一个 HTTP/HTTPS 订阅来源 URL
 ]
@@ -79,7 +79,6 @@ MANUAL_SUBSCRIPTION_SOURCES: list[str] = [
 MANUAL_STREAM_URLS: list[str] = [
     # 每项一个 HTTP/HTTPS 单条直播地址 URL
 ]
-```
 
 规则：
 
@@ -88,11 +87,11 @@ MANUAL_STREAM_URLS: list[str] = [
 - 人工输入优先于自动发现来源。
 - 不合法 URL 会被跳过并记录原因。
 
-详细规则见 `MASTER_PLAN.md`。
+详细规则见 "MASTER_PLAN.md"。
 
 ---
 
-## 四、运行方式
+四、运行方式
 
 系统支持三种运行方式：
 
@@ -100,94 +99,82 @@ MANUAL_STREAM_URLS: list[str] = [
 2. 手动正式运行。
 3. 手动测试运行。
 
-### 1. 每日自动运行
+1. 每日自动运行
 
 每日北京时间 06:17 自动运行，对应 GitHub Actions UTC 前一日 22:17。
 
 自动运行执行正式发布流程。
 
-### 2. 手动正式运行
+2. 手动正式运行
 
 通过 GitHub Actions 手动触发，选择正式模式。
 
 正式模式会：
 
-- 生成正式文件 `output/iptv.m3u`；
+- 生成正式文件 "output/iptv.m3u"；
 - 执行文件质量保护；
 - 通过检查后原子替换；
 - 按规则提交并推送 Git；
 - 核对远端分支 SHA。
 
-### 3. 手动测试运行
+3. 手动测试运行
 
 通过 GitHub Actions 手动触发，选择测试模式。
 
 测试模式：
 
-- 只写入 `output/test/iptv-test.m3u`；
+- 只写入 "output/test/iptv-test.m3u"；
 - 不覆盖正式文件；
 - 不推送 Git；
 - 不检查正式旧文件是否损坏；
 - 只检查测试文件自身。
 
-### 4. 并发保护
+4. 并发保护
 
 自动运行、手动正式运行、手动测试运行使用同一个 concurrency group。
 
 设置：
 
-```yaml
 cancel-in-progress: false
-```
 
 三种运行互斥，不允许同时发布或互相干扰。
 
-具体工作流输入名称和命令参数，以实际 GitHub Actions 工作流和 `main.py` 实现为准；不得与 `MASTER_PLAN.md` 冲突。
+具体工作流输入名称和命令参数，以实际 GitHub Actions 工作流和 "main.py" 实现为准；不得与 "MASTER_PLAN.md" 冲突。
 
 ---
 
-## 五、输出文件
+五、输出文件
 
-| 文件 | 用途 |
-|---|---|
-| `output/iptv.m3u` | 正式订阅文件 |
-| `output/test/iptv-test.m3u` | 测试订阅文件 |
+文件| 用途
+"output/iptv.m3u"| 正式订阅文件
+"output/test/iptv-test.m3u"| 测试订阅文件
 
 正式文件采用标准 M3U 格式：
 
-```m3u
 #EXTM3U
 #EXTINF:-1 tvg-id="ID" tvg-name="NAME" group-title="GROUP",频道名称
 https://example.com/live.m3u8
-```
 
 正式发布要求：
 
 - UTF-8 无 BOM；
 - LF 换行；
-- 首行 `#EXTM3U`；
+- 首行 "#EXTM3U"；
 - 至少一个有效频道；
 - 旧文件损坏时停止正式发布；
 - 测试模式不覆盖正式文件。
 
 ---
 
-## 六、订阅地址
+六、订阅地址
 
-正式订阅地址使用仓库中的正式文件。
+正式订阅地址和测试订阅地址已列在本文档开头，并分别对应正式文件和测试文件。
 
-```text
-https://raw.githubusercontent.com/womomo8/IPTV-Auto/main/output/iptv.m3u
-```
-
-说明：
-
-- 正式订阅地址对应 `main` 分支中的 `output/iptv.m3u`。
-- 测试文件地址不得作为正式订阅地址对外发布。
+日常添加订阅时使用正式订阅地址；测试订阅地址仅用于测试。
 
 ---
 
-## 七、发布保护与退出码
+七、发布保护与退出码
 
 正式发布具备以下保护：
 
@@ -200,33 +187,32 @@ https://raw.githubusercontent.com/womomo8/IPTV-Auto/main/output/iptv.m3u
 
 退出码：
 
-| 退出码 | 含义 |
-|---|---|
-| 0 | 运行成功 |
-| 1 | 配置或输入错误 |
-| 2 | 阶段发生不可恢复错误 |
-| 3 | 正式发布失败 |
-| 4 | 发布状态无法确认 |
+退出码| 含义
+0| 运行成功
+1| 配置或输入错误
+2| 阶段发生不可恢复错误
+3| 正式发布失败
+4| 发布状态无法确认
 
 ---
 
-## 八、开发与测试
+八、开发与测试
 
-开发顺序和测试要求以 `MASTER_PLAN.md` 为准。
+开发顺序和测试要求以 "MASTER_PLAN.md" 为准。
 
-当前开发进度、实际测试结果和待办见 `PROGRESS.md`。
+当前开发进度、实际测试结果和待办见 "PROGRESS.md"。
 
-总体架构和程序调用流程见 `CORE_FLOW.md`。
+总体架构和程序调用流程见 "CORE_FLOW.md"。
 
 任何未实际执行的测试不得标记为通过；任何未完成的功能不得报告为已完成。
 
 ---
 
-## 九、文档优先级
+九、文档优先级
 
-1. `MASTER_PLAN.md`：唯一完整技术规范和验收依据。
-2. `CORE_FLOW.md`：总体架构和调用流程说明。
-3. `PROGRESS.md`：真实开发进度、测试结果和待办。
-4. `README.md`：项目简介、运行方式和订阅地址。
+1. "MASTER_PLAN.md"：唯一完整技术规范和验收依据。
+2. "CORE_FLOW.md"：总体架构和调用流程说明。
+3. "PROGRESS.md"：真实开发进度、测试结果和待办。
+4. "README.md"：项目简介、运行方式和订阅地址。
 
-其他文件与 `MASTER_PLAN.md` 冲突时，以 `MASTER_PLAN.md` 为准。
+其他文件与 "MASTER_PLAN.md" 冲突时，以 "MASTER_PLAN.md" 为准。
