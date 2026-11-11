@@ -1,7 +1,7 @@
-
 """Tests for pipeline runtime budgets and cleanup timing."""
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import config
@@ -58,11 +58,25 @@ class TestPipelineBudgetConfiguration(unittest.TestCase):
             19 * 60,
         )
 
-    def test_actions_hard_timeout_is_22_minutes(self):
-        self.assertEqual(
-            config.GITHUB_ACTIONS_TIMEOUT_MINUTES,
-            22,
+    def test_actions_jobs_use_22_minute_hard_timeout(self):
+        workflow_path = (
+            Path(__file__).resolve().parents[1]
+            / ".github"
+            / "workflows"
+            / "iptv.yml"
         )
+
+        workflow_text = workflow_path.read_text(
+            encoding="utf-8"
+        )
+
+        timeouts = [
+            line.split(":", 1)[1].strip()
+            for line in workflow_text.splitlines()
+            if line.strip().startswith("timeout-minutes:")
+        ]
+
+        self.assertEqual(timeouts, ["22", "22"])
 
 
 class TestCleanupStageTiming(unittest.TestCase):
