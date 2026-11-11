@@ -6,10 +6,12 @@ from unittest.mock import AsyncMock, patch
 
 import main
 from models import (
+    Candidate,
     DownloadResult,
     IndexParseResult,
     SourceKind,
     SourceRecord,
+    ValidationResult,
 )
 
 
@@ -29,6 +31,83 @@ def make_download(source):
         status_code=200,
         bytes_received=8,
     )
+
+
+class TestValidationDiagnostics(unittest.TestCase):
+
+    def make_candidate(self, item_order, url):
+        return Candidate(
+            url=url,
+            name=f"频道{item_order}",
+            source_kind=SourceKind.MANUAL_SUBSCRIPTION,
+            source_order=1,
+            item_order=item_order,
+            source_url="https://example.com/manual.m3u",
+        )
+
+    def test_logs_source_totals_and_failure_reasons(self):
+        candidate_passed = self.make_candidate(
+            1, "https://example.com/1.ts"
+        )
+        candidate_failed = self.make_candidate(
+            2, "https://example.com/2.ts"
+        )
+        candidate_incomplete = self.make_candidate(
+            3, "https://example.com/3.ts"
+        )
+
+        results = (
+            ValidationResult(
+                candidate=candidate_passed,
+                passed=True,
+            ),
+            ValidationResult(
+                candidate=candidate_failed,
+                passed=False,
+                reason="HTTP 403",
+            ),
+            ValidationResult(
+                candidate=candidate_incomplete,
+                passed=False,
+                completed=False,
+                reason="连接超时",
+            ),
+        )
+
+        with self.assertLogs("iptv.main", level="INFO") as captured:
+            main._log_validation_diagnostics(results)
+
+        output = "\n".join(captured.output)
+
+        self.assertIn("总数：3", output)
+        self.assertIn("通过：1", output)
+        self.assertIn("失败：1", output)
+        self.assertIn("未完成：1", output)
+        self.assertIn("HTTP 403", output)
+        self.assertIn("连接超时", output)
+
+    def test_limits_failure_reasons_to_eight(self):
+        results = tuple(
+            ValidationResult(
+                candidate=self.make_candidate(
+                    index,
+                    f"https://example.com/{index}.ts",
+                ),
+                passed=False,
+                reason=f"错误原因{index}",
+            )
+            for index in range(1, 10)
+        )
+
+        with self.assertLogs("iptv.main", level="WARNING") as captured:
+            main._log_validation_diagnostics(results)
+
+        output = "\n".join(captured.output)
+
+        self.assertIn("错误原因1", output)
+        self.assertIn("错误原因8", output)
+        self.assertNotIn("错误原因9", output)
+        self.assertIn("其他失败原因", output)
 
 
 class TestCollectionScheduling(unittest.IsolatedAsyncioTestCase):
