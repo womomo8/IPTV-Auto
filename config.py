@@ -1,4 +1,3 @@
-
 """Central configuration for the IPTV automation project.
 
 All shared runtime limits, budgets, network settings,
@@ -69,10 +68,13 @@ MAX_SUBSCRIPTION_BYTES = 2 * 1024 * 1024
 
 ALLOWED_URL_SCHEMES = ("http", "https")
 
-IP_VERSION = 4
+# IPv4-only behavior is fixed in network.py.
+# It is a security requirement, not a runtime configuration switch.
 
 TRUST_ENV_PROXY = False
-VERIFY_TLS = True
+
+# HTTPS certificate verification is always enabled in network.py.
+# No configuration switch is provided to disable TLS verification.
 
 MIN_TCP_PORT = 1
 MAX_TCP_PORT = 65535
@@ -129,9 +131,8 @@ FILTER_BUDGET_SECONDS = 30
 PUBLISH_BUDGET_SECONDS = 2 * 60
 CLEANUP_BUDGET_SECONDS = 60
 
+# The following values define the documented budget model.
+# Their consistency is checked by tests.
 STAGE_BUDGET_TOTAL_SECONDS = 18 * 60
-
 STARTUP_RESERVE_SECONDS = 60
-
 NORMAL_RUN_TARGET_SECONDS = 19 * 60
-GITHUB_ACTIONS_TIMEOUT_MINUTES = 22
