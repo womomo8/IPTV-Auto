@@ -55,6 +55,15 @@ jobs:
       - name: Run IPTV test mode
         run: python main.py --mode test
 
+      - name: Upload IPTV test playlist
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iptv-test-playlist
+          path: output/test/iptv-test.m3u
+          if-no-files-found: warn
+          retention-days: 7
+
   formal:
     if: >-
       github.event_name == 'schedule' ||
