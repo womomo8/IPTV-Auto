@@ -36,18 +36,18 @@ def _http_failure_reason(
     result: NetworkResult,
     fallback: str,
 ) -> str:
-    """Preserve HTTP status details without duplicating existing errors."""
-    status_code = result.status_code
+    """Preserve HTTP status details without duplicating existing status text."""
+    status = result.status_code
+    error = (result.error or "").strip()
 
-    if status_code is not None and not 200 <= status_code < 300:
-        if result.error:
-            if f"status={status_code}" in result.error:
-                return result.error
-            return f"HTTP status {status_code}: {result.error}"
+    if status is not None and not 200 <= status < 300:
+        if re.search(r"\bstatus\s*=\s*\d{3}\b", error, re.IGNORECASE):
+            return error
+        if error:
+            return f"HTTP status {status}: {error}"
+        return f"HTTP status {status}"
 
-        return f"HTTP status {status_code}"
-
-    return result.error or fallback
+    return error or fallback
 
 
 def _bounded_prefix_ok(result: NetworkResult) -> bool:
@@ -238,7 +238,9 @@ async def _fetch_playlist(
         return None, unsupported
 
     return result, None
-    async def _validate_media_playlist(
+
+
+async def _validate_media_playlist(
     playlist_url: str,
     deadline: float,
     *,
@@ -487,8 +489,10 @@ async def _validate_one(candidate: Candidate) -> ValidationResult:
             stream_type=StreamType.UNKNOWN,
             completed=True,
             reason=f"Validation error: {type(exc).__name__}",
-    )
-        async def validate_candidates(
+        )
+
+
+async def validate_candidates(
     candidates: Sequence[Candidate],
 ) -> tuple[ValidationResult, ...]:
     """Validate allocated candidates in stable input order."""
@@ -602,5 +606,4 @@ async def _validate_one(candidate: Candidate) -> ValidationResult:
     return tuple(
         result for result in results
         if result is not None
-                )
-    
+    )
