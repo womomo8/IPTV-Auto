@@ -89,6 +89,7 @@ class TestValidationDiagnostics(unittest.TestCase):
         self.assertIn("HTTP 403", output)
         self.assertIn("连接超时", output)
 
+    
     def test_limits_failure_reasons_to_eight(self):
         results = tuple(
             ValidationResult(
@@ -107,10 +108,22 @@ class TestValidationDiagnostics(unittest.TestCase):
 
         output = "\n".join(captured.output)
 
-        self.assertIn("错误原因1", output)
-        self.assertIn("错误原因8", output)
-        self.assertNotIn("错误原因9", output)
+        # The grouped failure-reason summary is limited to eight reasons.
+        summary_lines = [
+            line for line in captured.output
+            if "检测失败原因：" in line
+        ]
+        summary_output = "\n".join(summary_lines)
+
+        self.assertIn("错误原因1", summary_output)
+        self.assertIn("错误原因8", summary_output)
+        self.assertNotIn("错误原因9", summary_output)
         self.assertIn("其他失败原因", output)
+
+        # Individual candidate diagnostics must still include all nine.
+        self.assertIn("候选验证明细", output)
+        self.assertIn("错误原因9", output)
+
 
 
 class TestCollectionScheduling(unittest.IsolatedAsyncioTestCase):
