@@ -30,7 +30,65 @@ from models import (
 
 
 logger = logging.getLogger("iptv.main")
+def _log_validation_diagnostics(validation_results) -> None:
+    """Log validation totals and failure reasons grouped by source."""
+    groups = defaultdict(list)
 
+    for result in validation_results:
+        candidate = result.candidate
+        source_label = candidate.source_url or candidate.url
+        source_kind = candidate.source_kind.value
+        groups[(source_kind, source_label)].append(result)
+
+    for (source_kind, source_label), results in groups.items():
+        total = len(results)
+        passed = sum(
+            1
+            for result in results
+            if result.completed and result.passed
+        )
+        incomplete = sum(
+            1
+            for result in results
+            if not result.completed
+        )
+        failed = total - passed - incomplete
+
+        logger.info(
+            "检测来源：%s | 来源类型：%s | 总数：%d | "
+            "通过：%d | 失败：%d | 未完成：%d",
+            source_label,
+            source_kind,
+            total,
+            passed,
+            failed,
+            incomplete,
+        )
+
+        reasons = Counter(
+            (result.reason or "未提供原因").replace("\n", " ")[:200]
+            for result in results
+            if not (result.completed and result.passed)
+        )
+
+        for reason, count in reasons.most_common(8):
+            logger.warning(
+                "检测失败原因：来源=%s | 类型=%s | 数量=%d | 原因=%s",
+                source_label,
+                source_kind,
+                count,
+                reason,
+            )
+
+        remaining = sum(reasons.values()) - sum(
+            count for _, count in reasons.most_common(8)
+        )
+        if remaining:
+            logger.warning(
+                "其他失败原因：来源=%s | 数量=%d",
+                source_label,
+                remaining,
+            )
 
 def _log_summary(summary: RunSummary) -> None:
     """Print a concise run summary."""
