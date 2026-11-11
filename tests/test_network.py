@@ -1,4 +1,3 @@
-
 """Tests for the shared IPv4-only network layer."""
 
 import asyncio
@@ -10,6 +9,19 @@ from unittest.mock import AsyncMock, patch
 import aiohttp
 
 import network
+
+
+class _AsyncContext:
+    """Small asynchronous context manager for request tests."""
+
+    def __init__(self, value):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
 
 
 class TestValidateUrl(unittest.TestCase):
@@ -306,6 +318,132 @@ class TestRequestBoundary(unittest.IsolatedAsyncioTestCase):
         self.assertIn("403", result.error)
         self.assertIn("Forbidden", result.error)
         request_once.assert_awaited_once()
+
+    async def test_redirect_rechecks_dns_and_preserves_network_security(self):
+        first_response = SimpleNamespace(
+            status=302,
+            headers={
+                "Location": "https://second.example/live.ts",
+            },
+        )
+        second_response = SimpleNamespace(
+            status=200,
+            headers={
+                "Content-Type": "video/mp2t",
+            },
+        )
+
+        responses = [first_response, second_response]
+        request_calls = []
+        session_options = []
+        connector_options = []
+        connectors = []
+
+        class FakeSession:
+
+            def __init__(self, response):
+                self.response = response
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+            def get(self, url, **kwargs):
+                request_calls.append((url, kwargs))
+                return _AsyncContext(self.response)
+
+        def create_session(**kwargs):
+            session_options.append(kwargs)
+            return FakeSession(responses[len(session_options) - 1])
+
+        def create_connector(**kwargs):
+            connector = SimpleNamespace(close=AsyncMock())
+            connector_options.append(kwargs)
+            connectors.append(connector)
+            return connector
+
+        with (
+            patch(
+                "network._resolve_public_ipv4",
+                new_callable=AsyncMock,
+                side_effect=[
+                    ("8.8.8.8",),
+                    ("1.1.1.1",),
+                ],
+            ) as resolve,
+            patch(
+                "network.aiohttp.TCPConnector",
+                side_effect=create_connector,
+            ),
+            patch(
+                "network.aiohttp.ClientSession",
+                side_effect=create_session,
+            ),
+            patch(
+                "network._actual_remote_ip",
+                side_effect=["8.8.8.8", "1.1.1.1"],
+            ) as actual_remote_ip,
+            patch("network._check_headers"),
+            patch(
+                "network._read_limited",
+                new_callable=AsyncMock,
+                return_value=(b"transport-stream", False, 16),
+            ),
+        ):
+            loop = asyncio.get_running_loop()
+            result = await network._request_once(
+                "https://first.example/live.ts",
+                100,
+                loop.time() + 10,
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(
+            result.final_url,
+            "https://second.example/live.ts",
+        )
+        self.assertEqual(
+            result.redirects,
+            ("https://second.example/live.ts",),
+        )
+
+        self.assertEqual(
+            [call.args for call in resolve.call_args_list],
+            [
+                ("first.example", 443),
+                ("second.example", 443),
+            ],
+        )
+
+        self.assertEqual(actual_remote_ip.call_count, 2)
+
+        self.assertEqual(len(connector_options), 2)
+        for options in connector_options:
+            self.assertEqual(options["family"], socket.AF_INET)
+            self.assertFalse(options["use_dns_cache"])
+            self.assertEqual(options["limit"], 1)
+
+        self.assertEqual(len(session_options), 2)
+        for options in session_options:
+            self.assertFalse(options["trust_env"])
+            self.assertFalse(options["auto_decompress"])
+
+        self.assertEqual(
+            [url for url, _ in request_calls],
+            [
+                "https://first.example/live.ts",
+                "https://second.example/live.ts",
+            ],
+        )
+
+        for _, kwargs in request_calls:
+            self.assertFalse(kwargs["allow_redirects"])
+            self.assertIs(kwargs["ssl"], True)
+
+        for connector in connectors:
+            connector.close.assert_awaited_once()
 
 
 if __name__ == "__main__":
