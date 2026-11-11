@@ -207,7 +207,9 @@ class TestHLSHelpers(unittest.TestCase):
             "#EXT-X-ENDLIST",
         ])
         self.assertIsNone(segment)
-        class TestValidateOne(unittest.IsolatedAsyncioTestCase):
+
+
+class TestValidateOne(unittest.IsolatedAsyncioTestCase):
 
     async def test_validates_ts_candidate(self):
         candidate = make_candidate()
@@ -257,105 +259,6 @@ class TestHLSHelpers(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertTrue(result.completed)
 
-    async def test_hls_playlist_failure_reports_http_status(self):
-        candidate = make_candidate("https://example.com/live.m3u8")
-        response = make_network_result(
-            url=candidate.url,
-            success=True,
-            status_code=403,
-        )
-
-        with patch(
-            "validator.network.request",
-            new_callable=AsyncMock,
-            return_value=response,
-        ):
-            result = await validator._validate_one(candidate)
-
-        self.assertFalse(result.passed)
-        self.assertTrue(result.completed)
-        self.assertEqual(result.stream_type, StreamType.HLS)
-        self.assertEqual(result.reason, "HTTP status 403")
-
-    async def test_hls_variant_failure_reports_http_status(self):
-        candidate = make_candidate("https://example.com/master.m3u8")
-        master_playlist = make_network_result(
-            (
-                b"#EXTM3U\n"
-                b"#EXT-X-STREAM-INF:BANDWIDTH=1000000\n"
-                b"variant.m3u8\n"
-            ),
-            url=candidate.url,
-            content_type="application/vnd.apple.mpegurl",
-        )
-        variant_response = make_network_result(
-            url="https://example.com/variant.m3u8",
-            success=True,
-            status_code=404,
-        )
-
-        with patch(
-            "validator.network.request",
-            new_callable=AsyncMock,
-            side_effect=[master_playlist, variant_response],
-        ):
-            result = await validator._validate_one(candidate)
-
-        self.assertFalse(result.passed)
-        self.assertTrue(result.completed)
-        self.assertEqual(result.stream_type, StreamType.HLS)
-        self.assertEqual(result.reason, "HTTP status 404")
-
-    async def test_hls_segment_failure_reports_http_status(self):
-        candidate = make_candidate("https://example.com/live.m3u8")
-        playlist = make_network_result(
-            b"#EXTM3U\n#EXTINF:5,\nsegment.ts\n",
-            url=candidate.url,
-            content_type="application/vnd.apple.mpegurl",
-        )
-        segment = make_network_result(
-            url="https://example.com/segment.ts",
-            success=True,
-            status_code=500,
-        )
-
-        with patch(
-            "validator.network.request",
-            new_callable=AsyncMock,
-            side_effect=[playlist, segment],
-        ):
-            result = await validator._validate_one(candidate)
-
-        self.assertFalse(result.passed)
-        self.assertTrue(result.completed)
-        self.assertEqual(result.stream_type, StreamType.HLS)
-        self.assertEqual(result.reason, "HTTP status 500")
-
-    async def test_hls_bad_status_line_error_is_not_duplicated(self):
-        candidate = make_candidate("https://example.com/live.m3u8")
-        original_error = (
-            "HTTP response error: status=400, "
-            "message=Bad status line"
-        )
-        response = make_network_result(
-            url=candidate.url,
-            success=False,
-            status_code=400,
-            error=original_error,
-        )
-
-        with patch(
-            "validator.network.request",
-            new_callable=AsyncMock,
-            return_value=response,
-        ):
-            result = await validator._validate_one(candidate)
-
-        self.assertFalse(result.passed)
-        self.assertTrue(result.completed)
-        self.assertEqual(result.stream_type, StreamType.HLS)
-        self.assertEqual(result.reason, original_error)
-
     async def test_timeout_returns_incomplete_result(self):
         with patch(
             "validator.network.request",
@@ -396,6 +299,98 @@ class TestHLSHelpers(unittest.TestCase):
             "https://example.com/segment.ts",
         )
 
+    async def test_hls_playlist_failure_reports_http_status(self):
+        candidate = make_candidate("https://example.com/live.m3u8")
+        response = make_network_result(
+            url=candidate.url,
+            success=False,
+            status_code=403,
+            error="Forbidden",
+        )
+
+        with patch(
+            "validator.network.request",
+            new_callable=AsyncMock,
+            return_value=response,
+        ):
+            result = await validator._validate_one(candidate)
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, "HTTP status 403: Forbidden")
+
+    async def test_hls_variant_failure_reports_http_status(self):
+        candidate = make_candidate("https://example.com/master.m3u8")
+        master = make_network_result(
+            b"#EXTM3U\n"
+            b"#EXT-X-STREAM-INF:BANDWIDTH=1000000\n"
+            b"variant.m3u8\n",
+            url=candidate.url,
+        )
+        variant = make_network_result(
+            url="https://example.com/variant.m3u8",
+            success=False,
+            status_code=404,
+            error="Not Found",
+        )
+
+        with patch(
+            "validator.network.request",
+            new_callable=AsyncMock,
+            side_effect=[master, variant],
+        ):
+            result = await validator._validate_one(candidate)
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.reason, "HTTP status 404: Not Found")
+
+    async def test_hls_segment_failure_reports_http_status(self):
+        candidate = make_candidate("https://example.com/live.m3u8")
+        playlist = make_network_result(
+            b"#EXTM3U\n#EXTINF:5,\nsegment.ts\n",
+            url=candidate.url,
+        )
+        segment = make_network_result(
+            url="https://example.com/segment.ts",
+            success=False,
+            status_code=500,
+            error="Internal Server Error",
+        )
+
+        with patch(
+            "validator.network.request",
+            new_callable=AsyncMock,
+            side_effect=[playlist, segment],
+        ):
+            result = await validator._validate_one(candidate)
+
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            result.reason,
+            "HTTP status 500: Internal Server Error",
+        )
+
+    async def test_hls_bad_status_line_error_is_not_duplicated(self):
+        candidate = make_candidate("https://example.com/live.m3u8")
+        response = make_network_result(
+            url=candidate.url,
+            success=False,
+            status_code=400,
+            error="Bad status line (status=400)",
+        )
+
+        with patch(
+            "validator.network.request",
+            new_callable=AsyncMock,
+            return_value=response,
+        ):
+            result = await validator._validate_one(candidate)
+
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            result.reason,
+            "Bad status line (status=400)",
+        )
+
     async def test_rejects_encrypted_hls_without_segment_request(self):
         candidate = make_candidate("https://example.com/live.m3u8")
         playlist = make_network_result(
@@ -416,7 +411,9 @@ class TestHLSHelpers(unittest.TestCase):
         self.assertTrue(result.completed)
         self.assertEqual(result.stream_type, StreamType.HLS)
         self.assertEqual(request.await_count, 1)
-        class TestValidateCandidates(unittest.IsolatedAsyncioTestCase):
+
+
+class TestValidateCandidates(unittest.IsolatedAsyncioTestCase):
 
     async def test_empty_input_returns_empty_tuple(self):
         result = await validator.validate_candidates(())
@@ -595,4 +592,3 @@ class TestHLSHelpers(unittest.TestCase):
                 "https://example.com/second.ts",
             ],
         )
-        
