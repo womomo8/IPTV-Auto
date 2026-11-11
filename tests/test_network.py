@@ -7,6 +7,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import aiohttp
+
 import network
 
 
@@ -280,6 +282,30 @@ class TestRequestBoundary(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result.success)
         request_once.assert_not_awaited()
+
+    async def test_records_http_response_status_and_message(self):
+        error = aiohttp.ClientResponseError(
+            request_info=None,
+            history=(),
+            status=403,
+            message="Forbidden",
+        )
+
+        with patch(
+            "network._request_once",
+            new_callable=AsyncMock,
+            side_effect=error,
+        ) as request_once:
+            result = await network.request(
+                "https://example.com/live.ts",
+                100,
+            )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.status_code, 403)
+        self.assertIn("403", result.error)
+        self.assertIn("Forbidden", result.error)
+        request_once.assert_awaited_once()
 
 
 if __name__ == "__main__":
