@@ -432,3 +432,72 @@ class TestValidateCandidates(unittest.IsolatedAsyncioTestCase):
                 "https://example.com/second.ts",
             ],
         )
+
+    async def test_external_cancellation_propagates_and_cancels_active_work(self):
+        candidates = (
+            make_candidate("https://example.com/first.ts", 0),
+            make_candidate("https://example.com/second.ts", 1),
+            make_candidate("https://example.com/third.ts", 2),
+        )
+
+        second_started = asyncio.Event()
+        second_cancelled = asyncio.Event()
+        called_urls = []
+
+        async def fake_validate(candidate):
+            called_urls.append(candidate.url)
+
+            if candidate.url.endswith("first.ts"):
+                return ValidationResult(
+                    candidate=candidate,
+                    passed=True,
+                    stream_type=StreamType.TS,
+                    completed=True,
+                )
+
+            if candidate.url.endswith("second.ts"):
+                second_started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    second_cancelled.set()
+
+            self.fail("A queued candidate must not start after cancellation.")
+
+        with (
+            patch(
+                "validator._validate_one",
+                new_callable=AsyncMock,
+                side_effect=fake_validate,
+            ),
+            patch.multiple(
+                "validator.config",
+                MAX_CONCURRENT_VALIDATIONS=1,
+                VALIDATION_WAITING_QUEUE_LIMIT=1,
+                DETECTION_BUDGET_SECONDS=30,
+                CANDIDATE_VALIDATION_BUDGET_SECONDS=8,
+            ),
+        ):
+            validation_task = asyncio.create_task(
+                validator.validate_candidates(candidates)
+            )
+
+            await asyncio.wait_for(
+                second_started.wait(),
+                timeout=3,
+            )
+
+            validation_task.cancel()
+
+            with self.assertRaises(asyncio.CancelledError):
+                await validation_task
+
+        self.assertTrue(second_cancelled.is_set())
+
+        self.assertEqual(
+            called_urls,
+            [
+                "https://example.com/first.ts",
+                "https://example.com/second.ts",
+            ],
+        )
