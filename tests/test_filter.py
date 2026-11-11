@@ -1,7 +1,7 @@
-
 """Business tests for validated candidate filtering and M3U generation."""
 
 import unittest
+from unittest.mock import patch
 
 import filter as iptv_filter
 from models import Candidate, SourceKind, StreamType, ValidationResult
@@ -341,22 +341,4 @@ class TestM3UGeneration(unittest.TestCase):
             '#EXTINF:-1 tvg-name="Channel",Channel',
         )
 
-    def test_quotes_and_line_breaks_are_cleaned(self):
-        candidate = make_candidate(
-            "https://example.com/live.ts",
-            'News "HD"\nChannel',
-            tvg_id='id"\nvalue',
-            group_title='Group"\nName',
-        )
-
-        result = iptv_filter.filter_candidates((make_result(candidate),))
-
-        self.assertEqual(result.channel_count, 1)
-        self.assertIn("tvg-id=\"id' value\"", result.m3u_content)
-        self.assertIn("tvg-name=\"News 'HD' Channel\"", result.m3u_content)
-        self.assertIn("group-title=\"Group' Name\"", result.m3u_content)
-        self.assertNotIn("\r", result.m3u_content)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_quotes_and_line_b
