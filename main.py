@@ -371,4 +371,223 @@ async def run_pipeline(mode: RunMode) -> int:
             download_results
         )
 
-        elapsed = time.mo
+        elapsed = time.monotonic() - stage_started
+        if elapsed > config.NORMALIZATION_BUDGET_SECONDS:
+            raise TimeoutError(
+                "Normalization stage exceeded its time budget."
+            )
+
+        candidates_collected = len(candidates)
+        stage_results.append(
+            StageResult(
+                stage_name=current_stage,
+                elapsed_seconds=elapsed,
+                success=True,
+            )
+        )
+
+        logger.info(
+            "候选整理完成：保留 %d 条候选。",
+            candidates_collected,
+        )
+
+        # Stage 3: Validation
+        current_stage = "检测"
+        stage_started = time.monotonic()
+
+        validation_results = await validator.validate_candidates(
+            candidates
+        )
+
+        elapsed = time.monotonic() - stage_started
+
+        candidates_validated = len(validation_results)
+        candidates_passed = sum(
+            1
+            for result in validation_results
+            if result.completed and result.passed
+        )
+        candidates_incomplete = sum(
+            1
+            for result in validation_results
+            if not result.completed
+        )
+
+        detection_incomplete = candidates_incomplete > 0
+        run_incomplete = (
+            run_incomplete or detection_incomplete
+        )
+
+        stage_results.append(
+            StageResult(
+                stage_name=current_stage,
+                elapsed_seconds=elapsed,
+                success=True,
+                incomplete=detection_incomplete,
+                message=(
+                    f"有 {candidates_incomplete} 条候选未完成验证。"
+                    if detection_incomplete
+                    else None
+                ),
+            )
+        )
+
+        # Stage 4: Filtering
+        current_stage = "筛选"
+        stage_started = time.monotonic()
+
+        filter_result = channel_filter.filter_candidates(
+            validation_results
+        )
+
+        elapsed = time.monotonic() - stage_started
+        stage_results.append(
+            StageResult(
+                stage_name=current_stage,
+                elapsed_seconds=elapsed,
+                success=True,
+            )
+        )
+
+        logger.info(
+            "筛选完成：最终有效频道 %d 条。",
+            filter_result.channel_count,
+        )
+
+        # Stage 5: Publication
+        current_stage = "发布"
+        stage_started = time.monotonic()
+
+        publish_result = publisher.publish(
+            filter_result,
+            mode,
+            repository_root=Path(__file__).resolve().parent,
+        )
+
+        elapsed = time.monotonic() - stage_started
+        stage_results.append(
+            StageResult(
+                stage_name=current_stage,
+                elapsed_seconds=elapsed,
+                success=publish_result.success,
+                message=publish_result.error,
+            )
+        )
+
+        if publish_result.success:
+            channels_published = filter_result.channel_count
+        else:
+            messages.append(
+                publish_result.error or "Publication failed."
+            )
+
+        # Stage 6: Summary and cleanup.
+        current_stage = "收尾"
+        cleanup_started = time.monotonic()
+        stage_results.append(
+            StageResult(
+                stage_name=current_stage,
+                elapsed_seconds=0.0,
+                success=True,
+                incomplete=run_incomplete,
+            )
+        )
+
+        return _finish(
+            mode,
+            publish_result.exit_code,
+            stage_results,
+            cleanup_started=cleanup_started,
+            sources_attempted=sources_attempted,
+            candidates_collected=candidates_collected,
+            candidates_validated=candidates_validated,
+            candidates_passed=candidates_passed,
+            candidates_incomplete=candidates_incomplete,
+            channels_published=channels_published,
+            incomplete=run_incomplete,
+            messages=messages,
+        )
+
+    except Exception as exc:
+        elapsed = 0.0
+        if "stage_started" in locals():
+            elapsed = max(
+                0.0,
+                time.monotonic() - stage_started,
+            )
+
+        logger.exception(
+            "%s 阶段发生不可恢复错误。",
+            current_stage,
+        )
+
+        stage_results.append(
+            StageResult(
+                stage_name=current_stage,
+                elapsed_seconds=elapsed,
+                success=False,
+                message=f"{type(exc).__name__}: {exc}",
+            )
+        )
+
+        messages.append(
+            f"{current_stage}阶段失败："
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        cleanup_started = time.monotonic()
+
+        return _finish(
+            mode,
+            ExitCode.STAGE_ERROR,
+            stage_results,
+            cleanup_started=cleanup_started,
+            sources_attempted=sources_attempted,
+            candidates_collected=candidates_collected,
+            candidates_validated=candidates_validated,
+            candidates_passed=candidates_passed,
+            candidates_incomplete=candidates_incomplete,
+            channels_published=channels_published,
+            incomplete=run_incomplete,
+            messages=messages,
+        )
+
+
+def main() -> int:
+    """Command-line entry point."""
+    parser = argparse.ArgumentParser(
+        description="China IPTV automatic subscription pipeline."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("formal", "test"),
+        default="formal",
+        help=(
+            "formal: generate and publish the official subscription; "
+            "test: write only the isolated test output."
+        ),
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable debug logging.",
+    )
+
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    mode = RunMode(args.mode)
+
+    try:
+        return asyncio.run(run_pipeline(mode))
+    except KeyboardInterrupt:
+        logger.warning("运行被手动中断。")
+        return int(ExitCode.STAGE_ERROR)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
