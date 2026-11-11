@@ -1,4 +1,3 @@
-
 """Tests for main pipeline orchestration and source scheduling."""
 
 import unittest
@@ -353,6 +352,102 @@ class TestPipelineInput(unittest.TestCase):
         )
 
         self.assertEqual(result, 1)
+
+
+class TestFilteringHandoff(
+    unittest.IsolatedAsyncioTestCase
+):
+
+    async def test_only_completed_passed_results_are_sent_to_filter(self):
+        passed_candidate = Candidate(
+            url="https://example.com/passed.ts",
+            name="通过频道",
+            source_kind=SourceKind.AUTO_SUBSCRIPTION,
+            source_order=1,
+            item_order=1,
+        )
+        failed_candidate = Candidate(
+            url="https://example.com/failed.ts",
+            name="失败频道",
+            source_kind=SourceKind.AUTO_SUBSCRIPTION,
+            source_order=1,
+            item_order=2,
+        )
+        incomplete_candidate = Candidate(
+            url="https://example.com/incomplete.ts",
+            name="未完成频道",
+            source_kind=SourceKind.AUTO_SUBSCRIPTION,
+            source_order=1,
+            item_order=3,
+        )
+
+        passed_result = ValidationResult(
+            candidate=passed_candidate,
+            passed=True,
+        )
+        failed_result = ValidationResult(
+            candidate=failed_candidate,
+            passed=False,
+            reason="HTTP 403",
+        )
+        incomplete_result = ValidationResult(
+            candidate=incomplete_candidate,
+            passed=False,
+            completed=False,
+            reason="检测预算耗尽",
+        )
+
+        validation_results = (
+            passed_result,
+            failed_result,
+            incomplete_result,
+        )
+
+        with (
+            patch.object(
+                main,
+                "_collect_two_rounds",
+                new=AsyncMock(return_value=((), 0, False)),
+            ),
+            patch.object(
+                main.normalizer,
+                "normalize_candidates",
+                return_value=(
+                    passed_candidate,
+                    failed_candidate,
+                    incomplete_candidate,
+                ),
+            ),
+            patch.object(
+                main.validator,
+                "validate_candidates",
+                new=AsyncMock(return_value=validation_results),
+            ),
+            patch.object(
+                main.channel_filter,
+                "filter_candidates",
+                return_value=FilterResult(
+                    m3u_content="#EXTM3U\n",
+                    channel_count=1,
+                ),
+            ) as filter_mock,
+            patch.object(
+                main.publisher,
+                "publish",
+                return_value=PublishResult(
+                    success=True,
+                    exit_code=ExitCode.SUCCESS,
+                    target_path="output/iptv.m3u",
+                ),
+            ),
+        ):
+            result = await main.run_pipeline(RunMode.FORMAL)
+
+        self.assertEqual(result, int(ExitCode.SUCCESS))
+
+        filter_mock.assert_called_once_with(
+            (passed_result,)
+        )
 
 
 class TestPipelineFailureHandling(
