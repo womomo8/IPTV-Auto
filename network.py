@@ -485,7 +485,21 @@ async def request(
             )
         except aiohttp.ClientSSLError:
             return _failure(url, "TLS verification failed.")
+        except aiohttp.ClientResponseError as exc:
+            message = str(exc.message).replace("\r", " ").replace("\n", " ")
+            message = message.strip()[:200]
+
+            error = f"HTTP response error: status={exc.status}"
+            if message:
+                error += f", message={message}"
+
+            return _failure(
+                url,
+                error,
+                status_code=exc.status,
+            )
         except (ValueError, TypeError) as exc:
+            return _failure(url, str(exc))
             return _failure(url, str(exc))
         except asyncio.TimeoutError:
             if attempt + 1 >= attempts:
