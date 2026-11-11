@@ -6,10 +6,12 @@ from unittest.mock import AsyncMock, patch
 
 import main
 from models import (
+    Candidate,
     DownloadResult,
     IndexParseResult,
     SourceKind,
     SourceRecord,
+    ValidationResult,
 )
 
 
@@ -29,6 +31,168 @@ def make_download(source):
         status_code=200,
         bytes_received=8,
     )
+
+
+def make_candidate(
+    url,
+    source_url,
+    kind=SourceKind.MANUAL_SUBSCRIPTION,
+    item_order=1,
+):
+    return Candidate(
+        url=url,
+        name=f"频道{item_order}",
+        source_kind=kind,
+        source_order=1,
+        item_order=item_order,
+        source_url=source_url,
+    )
+
+
+class TestValidationDiagnostics(unittest.TestCase):
+
+    def test_logs_source_counts_and_separates_failure_from_incomplete(self):
+        source_a = "https://example.com/manual.txt"
+        source_b = "https://example.com/auto.m3u"
+
+        results = (
+            ValidationResult(
+                candidate=make_candidate(
+                    "http://203.0.113.1/live1",
+                    source_a,
+                    item_order=1,
+                ),
+                passed=False,
+                reason="MPEG-TS sync check failed.",
+            ),
+            ValidationResult(
+                candidate=make_candidate(
+                    "http://203.0.113.1/live2",
+                    source_a,
+                    item_order=2,
+                ),
+                passed=False,
+                reason="MPEG-TS sync check failed.",
+            ),
+            ValidationResult(
+                candidate=make_candidate(
+                    "http://203.0.113.1/live3",
+                    source_a,
+                    item_order=3,
+                ),
+                passed=False,
+                completed=False,
+                reason="Candidate validation budget exhausted.",
+            ),
+            ValidationResult(
+                candidate=make_candidate(
+                    "http://203.0.113.2/live1",
+                    source_b,
+                    kind=SourceKind.AUTO_SUBSCRIPTION,
+                ),
+                passed=True,
+            ),
+        )
+
+        with self.assertLogs(
+            "iptv.main",
+            level="INFO",
+        ) as captured:
+            main._log_validation_diagnostics(results)
+
+        output = "\n".join(captured.output)
+
+        self.assertIn(
+            "检测来源统计：人工订阅 | "
+            f"{source_a} | 候选=3 | 通过=0 | 失败=2 | 未完成=1",
+            output,
+        )
+
+        self.assertIn(
+            "检测失败原因：MPEG-TS sync check failed. | 2条",
+            output,
+        )
+
+        self.assertIn(
+            "检测未完成原因：Candidate validation budget exhausted. | 1条",
+            output,
+        )
+
+        self.assertIn(
+            "检测来源统计：自动订阅 | "
+            f"{source_b} | 候选=1 | 通过=1 | 失败=0 | 未完成=0",
+            output,
+        )
+
+    def test_manual_streams_are_logged_separately(self):
+        results = (
+            ValidationResult(
+                candidate=make_candidate(
+                    "http://203.0.113.1/live1",
+                    None,
+                    kind=SourceKind.MANUAL_STREAM,
+                    item_order=1,
+                ),
+                passed=False,
+                reason="Connection failed.",
+            ),
+            ValidationResult(
+                candidate=make_candidate(
+                    "http://203.0.113.2/live2",
+                    None,
+                    kind=SourceKind.MANUAL_STREAM,
+                    item_order=2,
+                ),
+                passed=False,
+                reason="Connection failed.",
+            ),
+        )
+
+        with self.assertLogs(
+            "iptv.main",
+            level="INFO",
+        ) as captured:
+            main._log_validation_diagnostics(results)
+
+        output = "\n".join(captured.output)
+
+        self.assertIn(
+            "人工单条地址：http://203.0.113.1/live1",
+            output,
+        )
+        self.assertIn(
+            "人工单条地址：http://203.0.113.2/live2",
+            output,
+        )
+
+    def test_reason_output_is_limited_to_eight_types(self):
+        source_url = "https://example.com/manual.txt"
+
+        results = tuple(
+            ValidationResult(
+                candidate=make_candidate(
+                    f"http://203.0.113.1/live{index}",
+                    source_url,
+                    item_order=index,
+                ),
+                passed=False,
+                reason=f"Failure reason {index}",
+            )
+            for index in range(10)
+        )
+
+        with self.assertLogs(
+            "iptv.main",
+            level="WARNING",
+        ) as captured:
+            main._log_validation_diagnostics(results)
+
+        output = "\n".join(captured.output)
+
+        self.assertIn(
+            "检测失败原因：其余 2 种原因，共 2 条",
+            output,
+        )
 
 
 class TestCollectionScheduling(unittest.IsolatedAsyncioTestCase):
