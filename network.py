@@ -370,7 +370,7 @@ async def _request_once(
                 auto_decompress=config.AUTO_DECOMPRESS,
                 headers={
                     "Accept-Encoding": config.ACCEPT_ENCODING,
-                    "User-Agent": "com.fongmi.android.tv/5.8.7 (Linux;Android 12) AndroidXMedia3/1.11.1",
+                    "User-Agent": "IPTV-Auto/1.0",
                 },
                 max_line_size=config.MAX_HTTP_HEADER_LINE_BYTES,
                 max_field_size=config.MAX_HTTP_HEADER_LINE_BYTES,
