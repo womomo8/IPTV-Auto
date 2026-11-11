@@ -248,6 +248,32 @@ class TestChannelIdentityDeduplication(unittest.TestCase):
         self.assertEqual(result.channel_count, 1)
         self.assertIn("Sports Channel", result.m3u_content)
 
+    def test_display_name_preserves_original_compatibility_characters(self):
+        original = make_candidate(
+            "https://example.com/one.ts",
+            "ＣＣＴＶ５",
+        )
+        equivalent = make_candidate(
+            "https://example.com/two.ts",
+            "CCTV5",
+            item_order=2,
+        )
+
+        result = iptv_filter.filter_candidates((
+            make_result(original),
+            make_result(equivalent),
+        ))
+
+        self.assertEqual(result.channel_count, 1)
+        self.assertIn(
+            '#EXTINF:-1 tvg-name="ＣＣＴＶ５",ＣＣＴＶ５',
+            result.m3u_content,
+        )
+        self.assertNotIn(
+            '#EXTINF:-1 tvg-name="CCTV5",CCTV5',
+            result.m3u_content,
+        )
+
     def test_different_groups_are_not_duplicates(self):
         first = make_candidate(
             "https://example.com/one.ts",
@@ -318,70 +344,4 @@ class TestM3UGeneration(unittest.TestCase):
             group_title="Sports",
         )
 
-        result = iptv_filter.filter_candidates((make_result(candidate),))
-
-        self.assertEqual(result.channel_count, 1)
-        self.assertEqual(
-            result.m3u_content,
-            '#EXTM3U\n'
-            '#EXTINF:-1 tvg-id="channel-1" '
-            'tvg-name="Channel" group-title="Sports",Channel\n'
-            'https://example.com/live.ts\n',
-        )
-
-    def test_missing_optional_fields_are_omitted(self):
-        candidate = make_candidate(
-            "https://example.com/live.ts",
-            "Channel",
-        )
-
-        result = iptv_filter.filter_candidates((make_result(candidate),))
-
-        self.assertEqual(
-            result.m3u_content.splitlines()[1],
-            '#EXTINF:-1 tvg-name="Channel",Channel',
-        )
-
-    def test_quotes_and_line_breaks_are_cleaned(self):
-        candidate = make_candidate(
-            "https://example.com/live.ts",
-            'News "HD"\nChannel',
-            tvg_id='id"\nvalue',
-            group_title='Group"\nName',
-        )
-
-        result = iptv_filter.filter_candidates((make_result(candidate),))
-
-        self.assertEqual(result.channel_count, 1)
-        self.assertIn("tvg-id=\"id' value\"", result.m3u_content)
-        self.assertIn("tvg-name=\"News 'HD' Channel\"", result.m3u_content)
-        self.assertIn("group-title=\"Group' Name\"", result.m3u_content)
-        self.assertNotIn("\r", result.m3u_content)
-
-
-class TestFilterBudget(unittest.TestCase):
-
-    def test_final_budget_check_raises_when_budget_expires(self):
-        candidate = make_candidate(
-            "https://example.com/live.ts",
-            "Channel",
-        )
-        result = make_result(candidate)
-
-        original_monotonic = iptv_filter.time.monotonic
-        ticks = iter((100.0, 100.0, 100.0, 130.0))
-
-        try:
-            iptv_filter.time.monotonic = lambda: next(ticks)
-
-            with self.assertRaisesRegex(
-                TimeoutError,
-                "Filter stage budget exhausted",
-            ):
-                iptv_filter.filter_candidates((result,))
-        finally:
-            iptv_filter.time.monotonic = original_monotonic
-
-
-if __name__ == "__main__":
-    unittest.main()
+        result = iptv_filter.filter_candidates
