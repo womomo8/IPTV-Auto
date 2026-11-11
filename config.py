@@ -13,9 +13,7 @@ not this module.
 # ============================================================
 
 # Each item is one HTTP/HTTPS subscription source URL.
-MANUAL_SUBSCRIPTION_SOURCES: list[str] = [
-    "http://1.94.31.214/live/live9/dgtv.txt",
-]
+MANUAL_SUBSCRIPTION_SOURCES: list[str] = []
 
 # Each item is one HTTP/HTTPS live stream URL.
 MANUAL_STREAM_URLS: list[str] = []
