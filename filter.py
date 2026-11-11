@@ -1,4 +1,3 @@
-
 """Filter validated IPTV candidates and generate standard M3U content.
 
 This module:
@@ -249,6 +248,11 @@ def filter_candidates(
         output_lines.append(normalized_url)
 
         channel_count += 1
+
+    # The final check prevents the last processing step from
+    # crossing the filter budget unnoticed.
+    if time.monotonic() >= deadline:
+        raise TimeoutError("Filter stage budget exhausted.")
 
     return FilterResult(
         m3u_content="\n".join(output_lines) + "\n",
