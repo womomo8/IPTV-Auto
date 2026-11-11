@@ -8,7 +8,11 @@ import main
 from models import (
     Candidate,
     DownloadResult,
+    ExitCode,
+    FilterResult,
     IndexParseResult,
+    PublishResult,
+    RunMode,
     SourceKind,
     SourceRecord,
     ValidationResult,
@@ -349,6 +353,98 @@ class TestPipelineInput(unittest.TestCase):
         )
 
         self.assertEqual(result, 1)
+
+
+class TestPipelineFailureHandling(
+    unittest.IsolatedAsyncioTestCase
+):
+
+    async def test_stage_failure_stops_following_stages(self):
+        with (
+            patch.object(
+                main,
+                "_collect_two_rounds",
+                new=AsyncMock(return_value=((), 0, False)),
+            ),
+            patch.object(
+                main.normalizer,
+                "normalize_candidates",
+                return_value=(),
+            ),
+            patch.object(
+                main.validator,
+                "validate_candidates",
+                new=AsyncMock(
+                    side_effect=RuntimeError("validation stage failed")
+                ),
+            ) as validate_mock,
+            patch.object(
+                main.channel_filter,
+                "filter_candidates",
+            ) as filter_mock,
+            patch.object(
+                main.publisher,
+                "publish",
+            ) as publish_mock,
+        ):
+            result = await main.run_pipeline(RunMode.FORMAL)
+
+        self.assertEqual(result, int(ExitCode.STAGE_ERROR))
+        validate_mock.assert_awaited_once()
+        filter_mock.assert_not_called()
+        publish_mock.assert_not_called()
+
+    async def test_publish_failure_exit_codes_are_propagated(self):
+        for exit_code in (
+            ExitCode.PUBLISH_ERROR,
+            ExitCode.PUBLISH_UNCONFIRMED,
+        ):
+            with self.subTest(exit_code=exit_code):
+                publish_result = PublishResult(
+                    success=False,
+                    exit_code=exit_code,
+                    target_path="output/iptv.m3u",
+                    error="publish test failure",
+                )
+
+                with (
+                    patch.object(
+                        main,
+                        "_collect_two_rounds",
+                        new=AsyncMock(
+                            return_value=((), 0, False)
+                        ),
+                    ),
+                    patch.object(
+                        main.normalizer,
+                        "normalize_candidates",
+                        return_value=(),
+                    ),
+                    patch.object(
+                        main.validator,
+                        "validate_candidates",
+                        new=AsyncMock(return_value=()),
+                    ),
+                    patch.object(
+                        main.channel_filter,
+                        "filter_candidates",
+                        return_value=FilterResult(
+                            m3u_content="#EXTM3U\n",
+                            channel_count=0,
+                        ),
+                    ),
+                    patch.object(
+                        main.publisher,
+                        "publish",
+                        return_value=publish_result,
+                    ) as publish_mock,
+                ):
+                    result = await main.run_pipeline(
+                        RunMode.FORMAL
+                    )
+
+                self.assertEqual(result, int(exit_code))
+                publish_mock.assert_called_once()
 
 
 if __name__ == "__main__":
