@@ -1,4 +1,3 @@
-
 """Main orchestration for the IPTV automation pipeline."""
 
 from __future__ import annotations
@@ -30,6 +29,8 @@ from models import (
 
 
 logger = logging.getLogger("iptv.main")
+
+
 def _log_validation_diagnostics(validation_results) -> None:
     """Log validation totals and failure reasons grouped by source."""
     groups = defaultdict(list)
@@ -89,6 +90,7 @@ def _log_validation_diagnostics(validation_results) -> None:
                 source_label,
                 remaining,
             )
+
 
 def _log_summary(summary: RunSummary) -> None:
     """Print a concise run summary."""
@@ -495,8 +497,15 @@ async def run_pipeline(mode: RunMode) -> int:
         current_stage = "筛选"
         stage_started = time.monotonic()
 
+        # Only completed and passed validation results may enter filtering.
+        filter_validation_results = tuple(
+            result
+            for result in validation_results
+            if result.completed and result.passed
+        )
+
         filter_result = channel_filter.filter_candidates(
-            validation_results
+            filter_validation_results
         )
 
         elapsed = time.monotonic() - stage_started
