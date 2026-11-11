@@ -7,7 +7,6 @@ import argparse
 import asyncio
 import logging
 import time
-from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
@@ -30,132 +29,6 @@ from models import (
 
 
 logger = logging.getLogger("iptv.main")
-
-
-_SOURCE_KIND_LABELS = {
-    SourceKind.MANUAL_STREAM: "人工单条地址",
-    SourceKind.MANUAL_SUBSCRIPTION: "人工订阅",
-    SourceKind.AUTO_SUBSCRIPTION: "自动订阅",
-}
-
-
-def _clean_validation_reason(reason: str | None) -> str:
-    """Normalize and limit a validation reason for readable logs."""
-    cleaned = " ".join((reason or "未提供原因").split())
-
-    if len(cleaned) > 200:
-        return cleaned[:197] + "..."
-
-    return cleaned
-
-
-def _log_reason_counts(
-    label: str,
-    reasons: Counter[str],
-) -> None:
-    """Log grouped reasons without producing excessive output."""
-    items = reasons.most_common()
-
-    for reason, count in items[:8]:
-        logger.warning(
-            "%s：%s | %d条",
-            label,
-            reason,
-            count,
-        )
-
-    if len(items) > 8:
-        omitted_count = sum(
-            count
-            for _, count in items[8:]
-        )
-        omitted_types = len(items) - 8
-
-        logger.warning(
-            "%s：其余 %d 种原因，共 %d 条",
-            label,
-            omitted_types,
-            omitted_count,
-        )
-
-
-def _log_validation_diagnostics(
-    validation_results: Sequence,
-) -> None:
-    """Log validation counts and reasons grouped by source."""
-    grouped: dict[tuple[str, str], list] = {}
-
-    for result in validation_results:
-        candidate = result.candidate
-        source_kind = candidate.source_kind
-
-        kind_label = _SOURCE_KIND_LABELS.get(
-            source_kind,
-            source_kind.value,
-        )
-
-        if source_kind == SourceKind.MANUAL_STREAM:
-            source_label = (
-                f"人工单条地址：{candidate.url}"
-            )
-        else:
-            source_label = (
-                candidate.source_url or "来源地址缺失"
-            )
-
-        key = (kind_label, source_label)
-        grouped.setdefault(key, []).append(result)
-
-    for (kind_label, source_label), results in grouped.items():
-        passed = sum(
-            1
-            for result in results
-            if result.completed and result.passed
-        )
-
-        failed = sum(
-            1
-            for result in results
-            if result.completed and not result.passed
-        )
-
-        incomplete = sum(
-            1
-            for result in results
-            if not result.completed
-        )
-
-        logger.info(
-            "检测来源统计：%s | %s | 候选=%d | 通过=%d | 失败=%d | 未完成=%d",
-            kind_label,
-            source_label,
-            len(results),
-            passed,
-            failed,
-            incomplete,
-        )
-
-        failure_reasons = Counter(
-            _clean_validation_reason(result.reason)
-            for result in results
-            if result.completed and not result.passed
-        )
-
-        incomplete_reasons = Counter(
-            _clean_validation_reason(result.reason)
-            for result in results
-            if not result.completed
-        )
-
-        _log_reason_counts(
-            "检测失败原因",
-            failure_reasons,
-        )
-
-        _log_reason_counts(
-            "检测未完成原因",
-            incomplete_reasons,
-        )
 
 
 def _log_summary(summary: RunSummary) -> None:
@@ -375,4 +248,127 @@ async def _collect_two_rounds(
     )
 
     selected_automatic = tuple(
-   
+        discovered_sources[:automatic_slots]
+    )
+
+    if selected_automatic and loop.time() < collection_deadline:
+        automatic_results = await collector.collect_sources(
+            selected_automatic,
+            deadline=collection_deadline,
+        )
+    else:
+        automatic_results = ()
+
+    not_started += max(
+        0,
+        len(selected_automatic) - len(automatic_results),
+    )
+
+    download_results = (
+        tuple(manual_results)
+        + tuple(automatic_results)
+    )
+
+    all_results = (
+        tuple(index_results)
+        + tuple(manual_results)
+        + tuple(automatic_results)
+    )
+
+    attempted = len(all_results)
+
+    cancelled_or_truncated = any(
+        result.truncated for result in all_results
+    )
+
+    incomplete = cancelled_or_truncated or not_started > 0
+
+    logger.info(
+        "采集完成：索引尝试=%d，人工订阅尝试=%d，自动订阅尝试=%d",
+        len(index_results),
+        len(manual_results),
+        len(automatic_results),
+    )
+    logger.info(
+        "采集来源总数=%d，自动发现来源=%d",
+        attempted,
+        len(discovered_sources),
+    )
+
+    if not_started > 0:
+        logger.warning(
+            "采集预算截断：%d 个已选来源未能启动下载。",
+            not_started,
+        )
+
+    if cancelled_or_truncated:
+        logger.warning(
+            "采集存在已启动但被取消或读取超限的下载结果。"
+        )
+
+    return download_results, attempted, incomplete
+
+
+async def run_pipeline(mode: RunMode) -> int:
+    """Run the complete IPTV pipeline."""
+    if not isinstance(mode, RunMode):
+        logger.error("Invalid run mode.")
+        return int(ExitCode.INPUT_ERROR)
+
+    stage_results: list[StageResult] = []
+    messages: list[str] = []
+
+    sources_attempted = 0
+    candidates_collected = 0
+    candidates_validated = 0
+    candidates_passed = 0
+    candidates_incomplete = 0
+    channels_published = 0
+    run_incomplete = False
+
+    current_stage = "启动"
+
+    try:
+        # Stage 1: Collection
+        current_stage = "采集"
+        stage_started = time.monotonic()
+        collection_start = asyncio.get_running_loop().time()
+
+        (
+            download_results,
+            sources_attempted,
+            collection_incomplete,
+        ) = await _collect_two_rounds(collection_start)
+
+        run_incomplete = (
+            run_incomplete or collection_incomplete
+        )
+
+        collection_message = None
+        if collection_incomplete:
+            collection_message = (
+                "采集未完整完成：部分已选来源未能启动，"
+                "或已启动下载被取消、读取超限。"
+            )
+            messages.append(collection_message)
+
+        elapsed = time.monotonic() - stage_started
+        stage_results.append(
+            StageResult(
+                stage_name=current_stage,
+                elapsed_seconds=elapsed,
+                success=True,
+                incomplete=collection_incomplete,
+                message=collection_message,
+            )
+        )
+
+        # Stage 2: Normalization
+        current_stage = "整理"
+        stage_started = time.monotonic()
+
+        candidates = normalizer.normalize_candidates(
+            download_results
+        )
+
+        elapsed = time.mo
