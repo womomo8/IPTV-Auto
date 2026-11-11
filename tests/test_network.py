@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import aiohttp
 
 import network
+from models import NetworkResult
 
 
 class _AsyncContext:
@@ -182,6 +183,25 @@ class TestHeadersAndPeer(unittest.TestCase):
             for i in range(network.config.MAX_HTTP_HEADERS_COUNT + 1)
         ]
         with self.assertRaises(ValueError):
+            network._check_headers(self.response(headers))
+
+    def test_rejects_header_line_over_size_limit(self):
+        headers = [
+            (
+                b"X-Test",
+                b"a" * network.config.MAX_HTTP_HEADER_LINE_BYTES,
+            ),
+        ]
+        with self.assertRaisesRegex(ValueError, "header line"):
+            network._check_headers(self.response(headers))
+
+    def test_rejects_total_header_bytes_over_size_limit(self):
+        value_size = network.config.MAX_HTTP_HEADER_LINE_BYTES - 5
+        headers = [
+            (f"X-{index}".encode(), b"a" * (value_size - 2))
+            for index in range(9)
+        ]
+        with self.assertRaisesRegex(ValueError, "total size"):
             network._check_headers(self.response(headers))
 
     def peer_response(self, address):
@@ -357,6 +377,175 @@ class TestRequestBoundary(unittest.IsolatedAsyncioTestCase):
         self.assertIn("403", result.error)
         self.assertIn("Forbidden", result.error)
         request_once.assert_awaited_once()
+
+    async def test_retries_timeout_once_with_the_same_deadline(self):
+        url = "https://example.com/live.ts"
+        success = NetworkResult(
+            success=True,
+            requested_url=url,
+            content=b"stream",
+            remote_ip="8.8.8.8",
+            status_code=200,
+        )
+
+        with patch(
+            "network._request_once",
+            new_callable=AsyncMock,
+            side_effect=[asyncio.TimeoutError(), success],
+        ) as request_once:
+            result = await network.request(
+                url,
+                100,
+                timeout_seconds=2,
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(request_once.await_count, 2)
+        self.assertEqual(
+            request_once.await_args_list[0].args[2],
+            request_once.await_args_list[1].args[2],
+        )
+
+    async def test_does_not_retry_tls_verification_error(self):
+        error = aiohttp.ClientSSLError(
+            None,
+            OSError("certificate verification failed"),
+        )
+
+        with patch(
+            "network._request_once",
+            new_callable=AsyncMock,
+            side_effect=error,
+        ) as request_once:
+            result = await network.request(
+                "https://example.com/live.ts",
+                100,
+            )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "TLS verification failed.")
+        request_once.assert_awaited_once()
+
+    async def test_rejects_remote_peer_not_in_validated_dns_results(self):
+        response = SimpleNamespace(
+            status=200,
+            headers={"Content-Type": "video/mp2t"},
+        )
+        connector = SimpleNamespace(close=AsyncMock())
+
+        class FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+            def get(self, url, **kwargs):
+                return _AsyncContext(response)
+
+        with (
+            patch(
+                "network._resolve_public_ipv4",
+                new_callable=AsyncMock,
+                return_value=("8.8.8.8",),
+            ),
+            patch(
+                "network.aiohttp.TCPConnector",
+                return_value=connector,
+            ),
+            patch(
+                "network.aiohttp.ClientSession",
+                return_value=FakeSession(),
+            ),
+            patch(
+                "network._actual_remote_ip",
+                return_value="1.1.1.1",
+            ),
+            patch("network._check_headers"),
+        ):
+            loop = asyncio.get_running_loop()
+            with self.assertRaisesRegex(
+                OSError,
+                "differs from validated DNS",
+            ):
+                await network._request_once(
+                    "https://example.com/live.ts",
+                    100,
+                    loop.time() + 10,
+                )
+
+        connector.close.assert_awaited_once()
+
+    async def test_enforces_maximum_redirect_count(self):
+        responses = [
+            SimpleNamespace(
+                status=302,
+                headers={"Location": f"/redirect-{index}"},
+            )
+            for index in range(network.config.MAX_REDIRECTS + 1)
+        ]
+        connectors = []
+        session_count = 0
+
+        class FakeSession:
+            def __init__(self, response):
+                self.response = response
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+            def get(self, url, **kwargs):
+                return _AsyncContext(self.response)
+
+        def create_connector(**kwargs):
+            connector = SimpleNamespace(close=AsyncMock())
+            connectors.append(connector)
+            return connector
+
+        def create_session(**kwargs):
+            nonlocal session_count
+            response = responses[session_count]
+            session_count += 1
+            return FakeSession(response)
+
+        with (
+            patch(
+                "network._resolve_public_ipv4",
+                new_callable=AsyncMock,
+                return_value=("8.8.8.8",),
+            ),
+            patch(
+                "network.aiohttp.TCPConnector",
+                side_effect=create_connector,
+            ),
+            patch(
+                "network.aiohttp.ClientSession",
+                side_effect=create_session,
+            ),
+            patch(
+                "network._actual_remote_ip",
+                return_value="8.8.8.8",
+            ),
+            patch("network._check_headers"),
+        ):
+            loop = asyncio.get_running_loop()
+            with self.assertRaisesRegex(ValueError, "Too many redirects"):
+                await network._request_once(
+                    "https://example.com/live.ts",
+                    100,
+                    loop.time() + 10,
+                )
+
+        self.assertEqual(
+            session_count,
+            network.config.MAX_REDIRECTS + 1,
+        )
+        self.assertEqual(len(connectors), session_count)
+        for connector in connectors:
+            connector.close.assert_awaited_once()
 
     async def test_redirect_rechecks_dns_and_preserves_network_security(self):
         first_response = SimpleNamespace(
