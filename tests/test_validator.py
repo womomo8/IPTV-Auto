@@ -1,3 +1,4 @@
+
 """Business tests for IPTV candidate validation."""
 
 import asyncio
@@ -555,33 +556,53 @@ class TestValidateCandidates(unittest.IsolatedAsyncioTestCase):
 
             self.fail("A queued candidate must not start after cancellation.")
 
-        with (
-            patch(
-                "validator._validate_one",
-                new_callable=AsyncMock,
-                side_effect=fake_validate,
-            ),
-            patch.multiple(
-                "validator.config",
-                MAX_CONCURRENT_VALIDATIONS=1,
-                VALIDATION_WAITING_QUEUE_LIMIT=1,
-                DETECTION_BUDGET_SECONDS=30,
-                CANDIDATE_VALIDATION_BUDGET_SECONDS=8,
-            ),
-        ):
-            validation_task = asyncio.create_task(
-                validator.validate_candidates(candidates)
-            )
+        loop = asyncio.get_running_loop()
+        previous_exception_handler = loop.get_exception_handler()
+        unhandled_contexts = []
 
-            await asyncio.wait_for(
-                second_started.wait(),
-                timeout=3,
-            )
+        loop.set_exception_handler(
+            lambda _loop, context: unhandled_contexts.append(context)
+        )
 
-            validation_task.cancel()
+        try:
+            with (
+                patch(
+                    "validator._validate_one",
+                    new_callable=AsyncMock,
+                    side_effect=fake_validate,
+                ),
+                patch.multiple(
+                    "validator.config",
+                    MAX_CONCURRENT_VALIDATIONS=1,
+                    VALIDATION_WAITING_QUEUE_LIMIT=1,
+                    DETECTION_BUDGET_SECONDS=30,
+                    CANDIDATE_VALIDATION_BUDGET_SECONDS=8,
+                ),
+            ):
+                validation_task = asyncio.create_task(
+                    validator.validate_candidates(candidates)
+                )
 
-            with self.assertRaises(asyncio.CancelledError):
-                await validation_task
+                await asyncio.wait_for(
+                    second_started.wait(),
+                    timeout=3,
+                )
+
+                validation_task.cancel()
+
+                with self.assertRaises(asyncio.CancelledError):
+                    await validation_task
+
+            await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(previous_exception_handler)
+
+        self.assertEqual(
+            unhandled_contexts,
+            [],
+            "The event loop reported an unhandled Future exception: "
+            f"{unhandled_contexts!r}",
+        )
 
         self.assertTrue(second_cancelled.is_set())
 
