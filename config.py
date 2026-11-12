@@ -17,7 +17,15 @@ not this module.
 MANUAL_SUBSCRIPTION_SOURCES: list[str] = []
 
 # Each item is one HTTP/HTTPS live stream URL.
-MANUAL_STREAM_URLS: list[str] = []
+# Fujian China Mobile: manually verified stream URLs.
+MANUAL_STREAM_URLS: list[str] = [
+    "http://cmhiott.hvs.fj.chinamobile.com/PLTV/88888888/224/3221225829/index.m3u8?servicetype=1",
+    "http://cmhiott.hvs.fj.chinamobile.com/PLTV/88888888/224/3221225800/index.m3u8?servicetype=1",
+    "http://cmhiott.hvs.fj.chinamobile.com/PLTV/88888888/224/3221227283/index.m3u8?servicetype=1",
+    "http://cmhiott.hvs.fj.chinamobile.com/PLTV/88888888/224/3221225821/index.m3u8?servicetype=1",
+    "http://cmhiott.hvs.fj.chinamobile.com/PLTV/88888888/224/3221225805/index.m3u8?servicetype=1",
+    "http://cmhiott.hvs.fj.chinamobile.com/PLTV/88888888/224/3221225820/index.m3u8?servicetype=1",
+]
 
 # Each item is one HTTP/HTTPS URL pointing to a plain-text
 # automatic subscription index file.
