@@ -29,6 +29,18 @@ _ATTRIBUTE_PATTERN = re.compile(
 
 _M3U_MARKERS = (b"#EXTM3U", b"#EXTINF:", b"#EXTGRP:")
 
+# Known Fujian China Mobile channel IDs.
+# This allows different channels on the same server to retain
+# their own channel names and groups during filtering.
+_MANUAL_CHANNELS = {
+    "3221225829": ("CCTV-1", "央视"),
+    "3221225800": ("CCTV-2", "央视"),
+    "3221227283": ("CCTV-5", "体育"),
+    "3221225821": ("CCTV-5+", "体育"),
+    "3221225805": ("CCTV-7", "央视"),
+    "3221225820": ("CCTV-9", "央视"),
+}
+
 
 def _check_budget(deadline: float) -> None:
     """Stop normalization when its stage budget expires."""
@@ -396,7 +408,7 @@ def _manual_stream_candidates(
     urls: Sequence[str],
     deadline: float,
 ) -> Tuple[Candidate, ...]:
-    """Convert configured manual stream URLs into candidates."""
+    """Convert configured manual stream URLs into named candidates."""
     candidates: List[Candidate] = []
 
     for index, raw_url in enumerate(urls):
@@ -420,11 +432,21 @@ def _manual_stream_candidates(
             continue
 
         try:
-            hostname = urlsplit(normalized_url).hostname
+            parsed_url = urlsplit(normalized_url)
+            path_parts = parsed_url.path.rstrip("/").split("/")
+            channel_id = path_parts[-2] if len(path_parts) >= 2 else ""
         except ValueError:
-            hostname = None
+            channel_id = ""
 
-        channel_name = hostname or normalized_url
+        channel_info = _MANUAL_CHANNELS.get(channel_id)
+
+        if channel_info is not None:
+            channel_name, group_title = channel_info
+        else:
+            # Keep unknown manual streams distinct instead of assigning
+            # the same hostname as every channel name.
+            channel_name = channel_id or f"人工线路-{index + 1}"
+            group_title = "其他"
 
         candidates.append(
             Candidate(
@@ -434,8 +456,8 @@ def _manual_stream_candidates(
                 source_order=index,
                 item_order=index,
                 tvg_id=None,
-                tvg_name=None,
-                group_title=None,
+                tvg_name=channel_name,
+                group_title=group_title,
                 source_url=None,
             )
         )
